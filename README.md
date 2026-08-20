@@ -5,7 +5,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![DSH](https://img.shields.io/badge/DSH-0.1.0--rc.7-4D6BFE.svg)](https://github.com/deepseek-ai/deepseek-harness)
-[![GitHub](https://img.shields.io/badge/GitHub-yucheng--ai-181717?logo=github)](https://github.com/yucheng-ai/dsh-audio-copilot)
+[![GitHub](https://img.shields.io/badge/GitHub-ai--yucheng-181717?logo=github)](https://github.com/ai-yucheng/dsh-audio-copilot)
 [![npm](https://img.shields.io/badge/npm-dsh--audio--copilot-cb3837?logo=npm)](https://www.npmjs.com/package/dsh-audio-copilot)
 
 纯文本模型(如 DeepSeek)无法直接理解音频,也无法朗读。本插件补上这两块,并附赠一个**语音输入按钮**:

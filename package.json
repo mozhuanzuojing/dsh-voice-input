@@ -59,13 +59,13 @@
     "@types/ws": "^8.18.1",
     "typescript": "^5.6.0"
   },
-  "author": "yucheng-ai",
+  "author": "yucheng-ai (ai-yucheng)",
   "repository": {
-    "url": "https://github.com/yucheng-ai/dsh-audio-copilot.git",
+    "url": "https://github.com/ai-yucheng/dsh-audio-copilot.git",
     "type": "git"
   },
-  "homepage": "https://github.com/yucheng-ai/dsh-audio-copilot#readme",
+  "homepage": "https://github.com/ai-yucheng/dsh-audio-copilot#readme",
   "bugs": {
-    "url": "https://github.com/yucheng-ai/dsh-audio-copilot/issues"
+    "url": "https://github.com/ai-yucheng/dsh-audio-copilot/issues"
   }
 }
