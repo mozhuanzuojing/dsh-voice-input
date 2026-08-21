@@ -40,7 +40,7 @@ export const inject = ['tools', 'webServer']
 export interface Config {
   // ASR 引擎:gemini(多模态,直接吃 webm/wav/mp3,免费,默认)/
   //   zhipu(智谱 glm-asr-2512,需余额)/ openai(任意 OpenAI 兼容 /audio/transcriptions)
-  asrEngine: 'gemini' | 'zhipu' | 'openai'
+  asrEngine: 'gemini' | 'zhipu' | 'openai' | 'local'
   // zhipu / openai 引擎共用
   asrBaseUrl: string
   asrModel: string
@@ -61,10 +61,15 @@ export interface Config {
   transcribeTimeoutMs: number
   ttsTimeoutMs: number
   maxSegments: number
+  // 本地 ASR(faster-whisper)
+  localAsrRoot: string
+  localAsrModel: string
+  localAsrThreads: number
+  localAsrLanguage: string
 }
 
 export const Config: Schema<Config> = Schema.object({
-  asrEngine: Schema.union(['gemini', 'zhipu', 'openai']).default('gemini'),
+  asrEngine: Schema.union(['gemini', 'zhipu', 'openai', 'local']).default('gemini'),
   asrBaseUrl: Schema.string().default('https://open.bigmodel.cn/api/paas/v4'),
   asrModel: Schema.string().default('glm-asr-2512'),
   asrApiKeyEnv: Schema.string().default('ZHIPU_API_KEY'),
@@ -72,6 +77,12 @@ export const Config: Schema<Config> = Schema.object({
   geminiModel: Schema.string().default('gemini-3.6-flash'),
   geminiBaseUrl: Schema.string().default('https://generativelanguage.googleapis.com'),
   geminiProxy: Schema.string().default('http://127.0.0.1:7890'),
+  // 本地 ASR(faster-whisper 离线转写,免费无限用,不依赖 API 额度):
+  // transcribe.py 位于 localAsrRoot;模型首次使用自动下载(缓存于 ~/.cache/huggingface)
+  localAsrRoot: Schema.string().default('C:/Users/Admin/ss/DSH_UPGRADE/local-asr'),
+  localAsrModel: Schema.string().default('small'),
+  localAsrThreads: Schema.number().default(4),
+  localAsrLanguage: Schema.string().default(''),
   ttsEngine: Schema.union(['sapi', 'edge', 'openai']).default('sapi'),
   ttsBaseUrl: Schema.string().default('https://open.bigmodel.cn/api/paas/v4'),
   ttsModel: Schema.string().default('glm-tts'),
@@ -231,7 +242,49 @@ async function transcribeGemini(config: Config, path: string, signal?: AbortSign
   }
 }
 
+/**
+ * 本地 ASR:faster-whisper 离线转写(免费无限用,不依赖 API 额度/网络)。
+ * 调用 localAsrRoot/transcribe.py(faster-whisper, CPU int8),模型自动下载缓存;
+ * 支持任意 ffmpeg 可解音频(webm/mp3/wav...),自动多语言识别,可指定语言。
+ */
+async function transcribeLocal(config: Config, path: string, signal?: AbortSignal) {
+  const timeoutSignal = AbortSignal.timeout(config.transcribeTimeoutMs)
+  const signalAll = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal
+
+  const script = join(config.localAsrRoot, 'transcribe.py')
+  if (!(await assertReadable(script))) {
+    throw new Error(
+      `本地 ASR 未部署:找不到 ${script}。请先安装 faster-whisper 并放置 transcribe.py` +
+      `(见 DSH_UPGRADE/local-asr 部署说明),或把 asrEngine 切回 'gemini'/'zhipu'。`,
+    )
+  }
+  const args = [
+    script,
+    path,
+    config.localAsrModel,
+    String(Math.max(1, Math.min(16, config.localAsrThreads))),
+  ]
+  if (config.localAsrLanguage) args.push(config.localAsrLanguage)
+  try {
+    const { stdout } = await execFileAsync('python', args, {
+      signal: signalAll,
+      maxBuffer: 16 * 1024 * 1024,
+      encoding: 'utf8',
+    })
+    const text = stdout.trim().split('\n').pop()?.trim() ?? ''
+    if (!text || /^ERROR:/.test(text)) {
+      throw new Error(`本地 ASR 失败:${text || '无输出'}`)
+    }
+    return { text, language: null }
+  } catch (err: any) {
+    const stderr = err?.stderr ? String(err.stderr).trim() : ''
+    if (stderr) throw new Error(`本地 ASR 失败:${stderr.slice(0, 400)}`)
+    throw err
+  }
+}
+
 async function transcribeAudio(config: Config, path: string, signal?: AbortSignal) {
+  if (config.asrEngine === 'local') return transcribeLocal(config, path, signal)
   if (config.asrEngine === 'gemini') return transcribeGemini(config, path, signal)
   // zhipu / openai:OpenAI 兼容 /audio/transcriptions
   const key = process.env[config.asrApiKeyEnv]
