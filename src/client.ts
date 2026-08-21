@@ -91,8 +91,17 @@ function findComposer(): HTMLTextAreaElement | null {
 function insertTextIntoComposer(composer: HTMLTextAreaElement, text: string) {
   const sep = composer.value && !composer.value.endsWith('\n') ? '\n' : ''
   const next = composer.value + sep + text
-  composer.value = next
-  composer.dispatchEvent(new Event('input', { bubbles: true }))
+  // React 受控组件:直接赋 .value 不会更新 React 内部状态,导致可见层
+  // (backdrop 镜像)不渲染新文字(症状:转写后看不到字,拖一下才出现)。
+  // 用原型链上的原生 value setter 绕过 React 的 value tracker,
+  // 再派发 input 事件让 React onChange → setDraft 真正生效。
+  const proto = Object.getPrototypeOf(composer) as HTMLTextAreaElement
+  const setter = Object.getOwnPropertyDescriptor(proto, 'value')
+  if (setter?.set) setter.set.call(composer, next)
+  else composer.value = next
+  composer.dispatchEvent(
+    new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }),
+  )
   composer.focus()
 }
 
