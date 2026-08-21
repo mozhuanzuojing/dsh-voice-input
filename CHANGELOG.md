@@ -5,14 +5,20 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [0.3.0] - 2026-08-22
+## [0.4.0] - 2026-08-22
 
 ### 🗑️ 精简（用户反馈：只保留有界面入口的功能）
 
-- **移除 TTS（文字转语音）**：`audio_tts` 工具、三引擎（sapi/edge/openai）、`tts*` 配置项、`ws` 依赖
 - **移除 Agent 音频工具**：`audio_transcribe` / `audio_ask` / `audio_probe`（均为无界面入口的 Agent 工具，用户无法感知使用位置，与宣传不符）
 - **插件现在只保留一个功能：🎤 语音输入按钮**（录音 → 多引擎转写 → 文字填入输入框）——所见即所得，无任何隐藏能力
 - README / CHANGELOG / package.json 同步更新
+
+## [0.3.0] - 2026-08-22
+
+### 🗑️ 移除
+
+- **移除 TTS（文字转语音）功能**：删除 `audio_tts` 工具、三引擎实现（sapi/edge/openai）、`tts*` 配置项及 `ws` 依赖。
+- README / 文档同步更新（去除 TTS 相关说明）。
 
 ## [0.2.0] - 2026-08-22
 

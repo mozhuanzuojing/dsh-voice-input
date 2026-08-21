@@ -1,6 +1,6 @@
 {
   "name": "dsh-audio-copilot",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "聊天框语音输入按钮 for DeepSeek Harness: 点击麦克风说话,多引擎转写(智谱 GLM-ASR-2512 / 本地 faster-whisper / Gemini / OpenAI)自动填入输入框。一个按钮,所见即所得。",
   "license": "MIT",
   "keywords": [
