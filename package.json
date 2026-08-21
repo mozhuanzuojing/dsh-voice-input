@@ -1,7 +1,7 @@
 {
   "name": "dsh-audio-copilot",
   "version": "0.3.0",
-  "description": "Audio Copilot for DeepSeek Harness: voice input button + ASR transcription (Zhipu GLM-ASR-2512 / local faster-whisper / Gemini / OpenAI) with audio_probe / audio_transcribe / audio_ask tools. 给纯文本模型补上听的能力。",
+  "description": "聊天框语音输入按钮 for DeepSeek Harness: 点击麦克风说话,多引擎转写(智谱 GLM-ASR-2512 / 本地 faster-whisper / Gemini / OpenAI)自动填入输入框。一个按钮,所见即所得。",
   "license": "MIT",
   "keywords": [
     "dsh",

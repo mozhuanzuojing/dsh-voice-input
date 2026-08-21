@@ -1,20 +1,15 @@
-// dsh-audio-copilot — 语音工作台:给纯文本模型补上"听"和"说"的能力。
+// dsh-audio-copilot — 语音输入:给纯文本模型补上"听"的能力。
 //
-// 工具:
-//   audio_probe       用 ffprobe 读音频元数据(容器/时长/编码/声道)
-//   audio_transcribe  音频/录音 → 文字(OpenAI 兼容 /audio/transcriptions 端点,可配智谱/Whisper/SenseVoice)
-//   audio_ask         带时间锚定的音频问答(转写 + 关键词定位)
+// 能力:聊天框语音输入按钮(录音→多引擎转写→文字填入输入框)。
 //
 // 设计原则(对齐 DSH 官方规范):
 //   1. 一切可调值都进 Config schema,不硬编码。
-//   3. ASR 为 OpenAI 兼容端点,可配,不锁定厂商。
-//   4. 失败要大声:缺 key / 缺 ffmpeg / 端点错误都给可操作的错误信息。
-//   5. 注册是 effect:ctx.tools.register() 返回 disposer,卸载自动注销。
-//   6. 纯 ESM;@deepseek-ai/cordis 仅类型导入(编译期擦除)。
+//   2. ASR 为 OpenAI 兼容端点,可配,不锁定厂商(gemini/zhipu/local/openai)。
+//   3. 失败要大声:缺 key / 缺 ffmpeg / 端点错误都给可操作的错误信息。
+//   4. 纯 ESM;@deepseek-ai/cordis 仅类型导入(编译期擦除)。
 //
 import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
-import { defineTool } from '@deepseek-ai/dsh-tools'
 import { execFile, execFileSync } from 'node:child_process'
 import { promisify } from 'node:util'
 import { access, constants, readFile, writeFile, stat, rm } from 'node:fs/promises'
@@ -57,7 +52,6 @@ export interface Config {
   // 行为参数
   maxAudioBytes: number
   transcribeTimeoutMs: number
-  maxSegments: number
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -79,7 +73,6 @@ export const Config: Schema<Config> = Schema.object({
   localAsrPrompt: Schema.string().default('DeepSeek, DSH, 智能体, Flash, V4, 语音, 转写'),
   maxAudioBytes: Schema.number().default(25 * 1024 * 1024),
   transcribeTimeoutMs: Schema.number().default(120_000),
-  maxSegments: Schema.number().default(20),
 })
 
 // ── 小工具 ──────────────────────────────────────────────────────────────────
@@ -91,22 +84,6 @@ async function assertReadable(path: string): Promise<boolean> {
   } catch {
     return false
   }
-}
-
-function assertSafePath(path: string) {
-  if (typeof path !== 'string' || path.length === 0) throw new Error('path must be a non-empty string')
-  if (basename(path).startsWith('-')) throw new Error(`path basename must not start with '-': ${path}`)
-}
-
-function toolError(err: unknown): string {
-  const e = err as NodeJS.ErrnoException & { name?: string }
-  if (e?.code === 'ENOENT') {
-    return 'ERROR: ffprobe/ffmpeg not found on PATH, or the audio file does not exist.'
-  }
-  if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
-    return `ERROR: operation timed out or was cancelled: ${e.message}`
-  }
-  return `ERROR: ${e instanceof Error ? e.message : String(err)}`
 }
 
 function joinUrl(base: string, path: string): string {
@@ -126,31 +103,6 @@ function guessAudioMime(path: string): string {
     case 'flac': return 'audio/flac'
     case 'webm': return 'audio/webm'
     default: return 'audio/mpeg'
-  }
-}
-
-// ── ffprobe 元数据 ──────────────────────────────────────────────────────────
-
-async function probeAudio(path: string): Promise<any> {
-  const { stdout } = await execFileAsync('ffprobe', [
-    '-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', path,
-  ], { maxBuffer: 16 * 1024 * 1024 })
-  return JSON.parse(stdout)
-}
-
-function summarizeProbe(probe: any) {
-  const streams = Array.isArray(probe?.streams) ? probe.streams : []
-  const audio = streams.filter((s: any) => s.codec_type === 'audio')
-  return {
-    container: probe?.format?.format_name ?? 'unknown',
-    durationSec: probe?.format?.duration != null ? Math.round(Number(probe.format.duration) * 100) / 100 : null,
-    sizeBytes: probe?.format?.size != null ? Number(probe.format.size) : null,
-    audioStreams: audio.map((s: any) => ({
-      codec: s.codec_name,
-      sampleRate: s.sample_rate ? Number(s.sample_rate) : null,
-      channels: s.channels ?? null,
-      bitRate: s.bit_rate ? Number(s.bit_rate) : null,
-    })),
   }
 }
 
@@ -321,163 +273,9 @@ async function transcribeAudio(config: Config, path: string, signal?: AbortSigna
   }
 }
 
-// ── 时间锚定问答:转写 + 关键词定位 ─────────────────────────────────────────
-
-function splitSegments(text: string, maxLen = 120): { start: number; text: string }[] {
-  const sentences = text
-    .split(/(?<=[。！？!?\n])/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0)
-  const segments: { start: number; text: string }[] = []
-  let cursor = 0
-  for (const sentence of sentences) {
-    segments.push({ start: cursor, text: sentence.slice(0, maxLen) })
-    cursor += Math.max(1, sentence.length) * 0.35
-  }
-  return segments
-}
-
-function matchSegments(
-  segments: { start: number; text: string }[],
-  terms: string[],
-  limit: number,
-): { start: number; text: string; score: number }[] {
-  return segments
-    .map((seg) => {
-      const lower = seg.text.toLowerCase()
-      let score = 0
-      for (const term of terms) {
-        if (lower.includes(term.toLowerCase())) score += term.length
-      }
-      return { ...seg, score }
-    })
-    .filter((s) => s.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit)
-}
-
-// ── 工具注册 ────────────────────────────────────────────────────────────────
+// ── host 半:语音输入按钮的转写路由 ─ ────────────────────────────────────────────────────────────────
 
 export function apply(ctx: Context, config: Config) {
-  // 1) audio_probe —— 元数据
-  ctx.tools.register(defineTool({
-    name: 'audio_probe',
-    description:
-      'Inspect a local audio file and return its metadata as JSON: container, duration, ' +
-      'codec, sample rate, channels. Use this first when asked anything about an audio file.',
-    parameters: {
-      path: {
-        type: 'string',
-        required: true,
-        description: 'Absolute path to the audio file (mp3, wav, m4a, aac, ogg, flac, ...)',
-      },
-    },
-    output: {
-      schema: { type: 'string' },
-      render: (_args, value) => [{ type: 'text', text: value }],
-    },
-    async execute(args) {
-      try {
-        assertSafePath(args.path)
-      } catch (err) {
-        return toolError(err)
-      }
-      if (!(await assertReadable(args.path))) return `ERROR: file not found or not readable: ${args.path}`
-      try {
-        return JSON.stringify(summarizeProbe(await probeAudio(args.path)), null, 2)
-      } catch (err) {
-        return toolError(err)
-      }
-    },
-  }))
-
-  // 2) audio_transcribe —— 语音转文字
-  ctx.tools.register(defineTool({
-    name: 'audio_transcribe',
-    description:
-      'Transcribe speech from a local audio file into text via an OpenAI-compatible ASR endpoint ' +
-      '(e.g. Whisper, SenseVoice, GLM-ASR). Returns the transcript text and detected language. ' +
-      'Use when the user provides a recording, voice memo, or audio file and wants its content as text.',
-    parameters: {
-      path: {
-        type: 'string',
-        required: true,
-        description: 'Absolute path to the audio file',
-      },
-      language: {
-        type: 'string',
-        description: 'Optional language hint (e.g. "zh", "en"). Leave unset for auto-detect.',
-      },
-    },
-    output: {
-      schema: { type: 'string' },
-      render: (_args, value) => [{ type: 'text', text: value }],
-    },
-    async execute(args, exec) {
-      try {
-        assertSafePath(args.path)
-      } catch (err) {
-        return toolError(err)
-      }
-      if (!(await assertReadable(args.path))) return `ERROR: file not found or not readable: ${args.path}`
-      const size = await stat(args.path).then((s) => s.size).catch(() => 0)
-      if (size > config.maxAudioBytes) {
-        return `ERROR: audio file is ${size} bytes, exceeding maxAudioBytes=${config.maxAudioBytes}.`
-      }
-      try {
-        return JSON.stringify(await transcribeAudio(config, args.path, exec?.signal), null, 2)
-      } catch (err) {
-        return toolError(err)
-      }
-    },
-  }))
-
-  // 3) audio_ask —— 带时间锚定的音频问答
-  ctx.tools.register(defineTool({
-    name: 'audio_ask',
-    description:
-      'Answer a question about a local audio file with time-anchored evidence. Transcribes the audio, ' +
-      'locates transcript segments matching the question, and returns matched segments with estimated ' +
-      'timestamps plus the full transcript. Use for "what was said about X" or "when did they mention Y" questions.',
-    parameters: {
-      path: {
-        type: 'string',
-        required: true,
-        description: 'Absolute path to the audio file',
-      },
-      question: {
-        type: 'string',
-        required: true,
-        description: 'The question to answer from the audio content',
-      },
-    },
-    output: {
-      schema: { type: 'string' },
-      render: (_args, value) => [{ type: 'text', text: value }],
-    },
-    async execute(args, exec) {
-      try {
-        assertSafePath(args.path)
-      } catch (err) {
-        return toolError(err)
-      }
-      if (!(await assertReadable(args.path))) return `ERROR: file not found or not readable: ${args.path}`
-      try {
-        const { text } = await transcribeAudio(config, args.path, exec?.signal)
-        const segments = splitSegments(text)
-        const terms = args.question.split(/\s+/).filter((t) => t.length >= 2).slice(0, 8)
-        const matched = matchSegments(segments, terms, config.maxSegments)
-        return JSON.stringify({
-          transcript: text,
-          matchedSegments: matched,
-          note: 'Timestamps are estimates derived from character counts (~0.35s per char); use audio_probe for precise duration.',
-        }, null, 2)
-      } catch (err) {
-        return toolError(err)
-      }
-    },
-  }))
-
   // ── host 半:语音输入按钮的转写路由 ────────────────────────────────────
   // POST /audio-copilot/transcribe —— 接收浏览器麦克风录制的音频 blob,
   // 存临时文件 → 调 ASR → 返回 { text }。客户端(浏览器)由此拿到文字并填入输入框。
@@ -533,7 +331,7 @@ export function apply(ctx: Context, config: Config) {
   }
 
   console.log(
-    `[audio-copilot] registered audio_probe / audio_transcribe / audio_ask ` +
+    `[audio-copilot] voice-input button registered ` +
     `(ASR=${config.asrEngine}${config.asrEngine === 'gemini' ? `:${config.geminiModel}` : `:${config.asrModel}@${config.asrBaseUrl}`})`,
   )
 }
