@@ -59,32 +59,37 @@ dsh --profile web --dump-config | grep audio-copilot
 ```yaml
 - id: audio-copilot
   config:
-    # ASR:OpenAI 兼容 /audio/transcriptions 端点
+    # ASR 引擎:gemini(海外,多模态,免费档有限流) | zhipu(国内,GLM-ASR-2512 中文+方言+外语) | local(本地 faster-whisper,免费离线) | openai(任意兼容端点)
+    asrEngine: zhipu
     asrBaseUrl: https://open.bigmodel.cn/api/paas/v4
-    asrModel: glm-4v-asr
+    asrModel: glm-asr-2512
     asrApiKeyEnv: ZHIPU_API_KEY
+    # 本地引擎(faster-whisper,免费无限用):transcribe.py 位于 localAsrRoot;模型自动下载缓存
+    localAsrRoot: C:/Users/<you>/dsh-local-asr
+    localAsrModel: medium
+    localAsrThreads: 4
+    localAsrPrompt: DeepSeek, DSH, 智能体
     # TTS 引擎:sapi | edge | openai
     ttsEngine: sapi
-    ttsBaseUrl: https://open.bigmodel.cn/api/paas/v4
-    ttsModel: glm-tts
-    ttsApiKeyEnv: ZHIPU_API_KEY
     ttsVoice: Microsoft Huihui Desktop
 ```
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `asrBaseUrl` | `https://open.bigmodel.cn/api/paas/v4` | ASR 端点根(OpenAI 兼容) |
-| `asrModel` | `glm-4v-asr` | ASR 模型名 |
+| `asrEngine` | `gemini` | ASR 引擎:`gemini`(多模态,免费档每时段 20 次限流,429 自动重试)/ `zhipu`(GLM-ASR-2512,国内直连,中文+四川/粤/闽/吴方言+数十种外语,限 30s)/ `local`(faster-whisper 本地免费)/ `openai`(任意兼容端点) |
+| `asrBaseUrl` | `https://open.bigmodel.cn/api/paas/v4` | zhipu/openai 引擎端点根 |
+| `asrModel` | `glm-asr-2512` | zhipu/openai 引擎模型名 |
 | `asrApiKeyEnv` | `ZHIPU_API_KEY` | 持 key 的环境变量名 |
+| `geminiApiKeyEnv` | `GEMINI_API_KEY` | gemini 引擎 key 环境变量 |
+| `geminiModel` | `gemini-3.6-flash` | gemini 引擎模型 |
+| `geminiProxy` | `http://127.0.0.1:7890` | gemini 引擎代理(海外直连无需配) |
+| `localAsrRoot` | *(空)* | 本地引擎目录(含 `transcribe.py`),需自行部署 faster-whisper |
+| `localAsrModel` | `medium` | 本地 whisper 模型(tiny/base/small/medium/large-v3) |
+| `localAsrPrompt` | *(空)* | 本地引擎专有名词提示(逗号分隔),提升 DeepSeek 等词识别 |
 | `ttsEngine` | `sapi` | TTS 引擎:`sapi`(本地)/ `edge`(在线)/ `openai`(兼容端点) |
-| `ttsBaseUrl` | `https://open.bigmodel.cn/api/paas/v4` | openai 引擎端点 |
-| `ttsModel` | `glm-tts` | openai 引擎模型 |
-| `ttsApiKeyEnv` | `ZHIPU_API_KEY` | openai 引擎 key 环境变量 |
 | `ttsVoice` | `Microsoft Huihui Desktop` | 默认音色 |
 | `maxAudioBytes` | `26214400` | 转写文件大小上限 |
 | `transcribeTimeoutMs` | `120000` | ASR 超时 |
-| `ttsTimeoutMs` | `90000` | TTS 超时 |
-| `maxSegments` | `20` | audio_ask 返回的命中片段上限 |
 
 ## 🎯 使用示例
 
