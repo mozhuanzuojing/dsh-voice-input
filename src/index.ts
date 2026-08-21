@@ -191,24 +191,41 @@ async function transcribeGemini(config: Config, path: string, signal?: AbortSign
   try {
     const url = `${joinUrl(config.geminiBaseUrl, '')}/v1beta/models/${config.geminiModel}:generateContent?key=${encodeURIComponent(key)}`
     const proxy = config.geminiProxy || process.env.HTTPS_PROXY || process.env.http_proxy || ''
-    const args = [
-      '-sS', '-w', '\n%{http_code}', '-X', 'POST', url,
-      '-H', 'content-type: application/json',
-      '--data', `@${tmpJson}`,
-      '--max-time', String(Math.max(30, Math.floor(config.transcribeTimeoutMs / 1000))),
-    ]
-    if (proxy) args.push('--proxy', proxy)
-    const { stdout } = await execFileAsync('curl.exe', args, { signal: signalAll, maxBuffer: 8 * 1024 * 1024 })
-    const lines = stdout.trimEnd().split('\n')
-    const status = Number(lines.pop())
-    const out = lines.join('\n')
-    if (status !== 200) throw new Error(`Gemini ASR HTTP ${status}: ${out.slice(0, 500)}`)
-    const data: any = JSON.parse(out)
-    const text = Array.isArray(data?.candidates?.[0]?.content?.parts)
-      ? data.candidates[0].content.parts.map((p: any) => (typeof p?.text === 'string' ? p.text : '')).join('').trim()
-      : ''
-    if (!text) throw new Error(`Gemini ASR returned no text: ${JSON.stringify(data).slice(0, 500)}`)
-    return { text, language: null }
+    const mkArgs = () => {
+      const args = [
+        '-sS', '-w', '\n%{http_code}', '-X', 'POST', url,
+        '-H', 'content-type: application/json',
+        '--data', `@${tmpJson}`,
+        '--max-time', String(Math.max(30, Math.floor(config.transcribeTimeoutMs / 1000))),
+      ]
+      if (proxy) args.push('--proxy', proxy)
+      return args
+    }
+    // Gemini 免费额度会 429 限流(提示 "Please retry in Ns"):等待后重试一次
+    let lastError: Error | null = null
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const { stdout } = await execFileAsync('curl.exe', mkArgs(), { signal: signalAll, maxBuffer: 8 * 1024 * 1024 })
+      const lines = stdout.trimEnd().split('\n')
+      const status = Number(lines.pop())
+      const out = lines.join('\n')
+      if (status === 200) {
+        const data: any = JSON.parse(out)
+        const text = Array.isArray(data?.candidates?.[0]?.content?.parts)
+          ? data.candidates[0].content.parts.map((p: any) => (typeof p?.text === 'string' ? p.text : '')).join('').trim()
+          : ''
+        if (!text) throw new Error(`Gemini ASR returned no text: ${JSON.stringify(data).slice(0, 500)}`)
+        return { text, language: null }
+      }
+      if (status === 429 && attempt === 0) {
+        const m = /retry in ([\d.]+)s/i.exec(out)
+        const waitMs = m ? Math.min(Math.ceil(Number(m[1]) * 1000) + 800, 20000) : 6000
+        lastError = new Error(`Gemini 免费额度繁忙(429),等待 ${Math.round(waitMs / 1000)}s 后重试`)
+        await new Promise((r) => setTimeout(r, waitMs))
+        continue
+      }
+      throw new Error(`Gemini ASR HTTP ${status}: ${out.slice(0, 500)}`)
+    }
+    throw lastError ?? new Error('Gemini ASR failed')
   } finally {
     await rm(tmpJson).catch(() => {})
   }
