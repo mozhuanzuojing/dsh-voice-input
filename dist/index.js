@@ -14,9 +14,14 @@ export const name = 'audio-copilot';
 // 路由注册被静默跳过(浏览器 405/SPA fallback),按钮点击转写必然失败。
 export const inject = ['tools', 'webServer'];
 export const Config = Schema.object({
+    asrEngine: Schema.union(['gemini', 'zhipu', 'openai']).default('gemini'),
     asrBaseUrl: Schema.string().default('https://open.bigmodel.cn/api/paas/v4'),
-    asrModel: Schema.string().default('glm-4v-asr'),
+    asrModel: Schema.string().default('glm-asr-2512'),
     asrApiKeyEnv: Schema.string().default('ZHIPU_API_KEY'),
+    geminiApiKeyEnv: Schema.string().default('GEMINI_API_KEY'),
+    geminiModel: Schema.string().default('gemini-3.6-flash'),
+    geminiBaseUrl: Schema.string().default('https://generativelanguage.googleapis.com'),
+    geminiProxy: Schema.string().default('http://127.0.0.1:7890'),
     ttsEngine: Schema.union(['sapi', 'edge', 'openai']).default('sapi'),
     ttsBaseUrl: Schema.string().default('https://open.bigmodel.cn/api/paas/v4'),
     ttsModel: Schema.string().default('glm-tts'),
@@ -93,8 +98,55 @@ function summarizeProbe(probe) {
         })),
     };
 }
-// ── ASR:OpenAI 兼容 /audio/transcriptions ──────────────────────────────────
+// ── ASR:三引擎(gemini 多模态默认 / zhipu / openai 兼容)──────────────────
+/** gemini 引擎:多模态模型直接吃音频(webm/wav/mp3 皆可),免费额度,走 generateContent。 */
+async function transcribeGemini(config, path, signal) {
+    const key = process.env[config.geminiApiKeyEnv];
+    if (!key) {
+        throw new Error(`Gemini API key not set. Export ${config.geminiApiKeyEnv} with a key, ` +
+            `or set asrEngine to 'zhipu'/'openai' with the matching key env.`);
+    }
+    const timeoutSignal = AbortSignal.timeout(config.transcribeTimeoutMs);
+    const signalAll = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+    const bytes = await readFile(path);
+    const mime = guessAudioMime(path);
+    const body = {
+        contents: [{
+                parts: [
+                    { inline_data: { mime_type: mime, data: bytes.toString('base64') } },
+                    { text: '请把这段语音完整转写成文字，只输出转写结果，不要任何解释。' },
+                ],
+            }],
+    };
+    const url = `${joinUrl(config.geminiBaseUrl, '')}/v1beta/models/${config.geminiModel}:generateContent?key=${encodeURIComponent(key)}`;
+    const proxy = config.geminiProxy || process.env.HTTPS_PROXY || process.env.http_proxy || '';
+    // 注意:init 用 any 规避 undici 8 与全局 FormData/RequestInit 的类型冲突
+    const init = {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: signalAll,
+    };
+    if (proxy) {
+        // undici ProxyAgent 走本机代理(如 Clash),Gemini 需要
+        const { ProxyAgent } = await import('undici');
+        init.dispatcher = new ProxyAgent(proxy);
+    }
+    const res = await fetch(url, init);
+    if (!res.ok)
+        throw new Error(`Gemini ASR HTTP ${res.status}: ${(await res.text()).slice(0, 500)}`);
+    const data = await res.json();
+    const text = Array.isArray(data?.candidates?.[0]?.content?.parts)
+        ? data.candidates[0].content.parts.map((p) => (typeof p?.text === 'string' ? p.text : '')).join('').trim()
+        : '';
+    if (!text)
+        throw new Error(`Gemini ASR returned no text: ${JSON.stringify(data).slice(0, 500)}`);
+    return { text, language: null };
+}
 async function transcribeAudio(config, path, signal) {
+    if (config.asrEngine === 'gemini')
+        return transcribeGemini(config, path, signal);
+    // zhipu / openai:OpenAI 兼容 /audio/transcriptions
     const key = process.env[config.asrApiKeyEnv];
     if (!key) {
         throw new Error(`ASR API key not set. Export ${config.asrApiKeyEnv} with a key for ${config.asrBaseUrl} ` +
@@ -450,13 +502,21 @@ export function apply(ctx, config) {
                     // 优先取 file 字段;否则整体当裸音频
                     const fileField = parts.find((p) => p.name === 'file');
                     const audioBytes = fileField ? fileField.data : body;
-                    const key = process.env[config.asrApiKeyEnv];
-                    if (!key)
-                        return send(res, 400, { error: `ASR key ${config.asrApiKeyEnv} not set` });
+                    // 引擎密钥检查(按引擎区分,给可操作报错)
+                    const key = config.asrEngine === 'gemini'
+                        ? process.env[config.geminiApiKeyEnv]
+                        : process.env[config.asrApiKeyEnv];
+                    if (!key) {
+                        const envName = config.asrEngine === 'gemini' ? config.geminiApiKeyEnv : config.asrApiKeyEnv;
+                        return send(res, 400, { error: `ASR key ${envName} not set` });
+                    }
                     if (audioBytes.length > config.maxAudioBytes)
                         return send(res, 413, { error: 'audio too large' });
-                    // 写临时文件转写
-                    const tmp = join(tmpdir(), `dsh-voice-${Date.now()}.webm`);
+                    // 写临时文件转写:保留上传文件的扩展名(浏览器录音是 .webm,智谱只收 .wav/.mp3,
+                    // Gemini 多模态都收;扩展名错误会让部分端点直接拒格式)
+                    const fname = fileField?.filename ?? '';
+                    const ext = fname.includes('.') ? `.${fname.split('.').pop()}` : '.webm';
+                    const tmp = join(tmpdir(), `dsh-voice-${Date.now()}${ext}`);
                     await writeFile(tmp, audioBytes);
                     try {
                         const result = await transcribeAudio(config, tmp);
@@ -474,7 +534,7 @@ export function apply(ctx, config) {
         ctx.effect(() => disposer);
     }
     console.log(`[audio-copilot] registered audio_probe / audio_transcribe / audio_tts / audio_ask ` +
-        `(ASR=${config.asrModel}@${config.asrBaseUrl}, TTS=${config.ttsEngine})`);
+        `(ASR=${config.asrEngine}${config.asrEngine === 'gemini' ? `:${config.geminiModel}` : `:${config.asrModel}@${config.asrBaseUrl}`}, TTS=${config.ttsEngine})`);
 }
 function parseMultipart(body, boundary) {
     const delimiter = Buffer.from(`--${boundary}`);

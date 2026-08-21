@@ -1,29 +1,87 @@
 // dsh-audio-copilot client half — 在聊天输入框工具栏注入"语音输入"麦克风按钮。
 //
-// 交互:点击麦克风 → 浏览器 MediaRecorder 录音 → 结束后把音频 blob POST 到
-// host 的 /audio-copilot/transcribe → 拿回文字 → 追加到输入框 draft。
+// 交互:点击麦克风 → MediaRecorder 录音(红点脉冲 + 计时)→ 停止 →
+// POST host /audio-copilot/transcribe(Gemini 多模态免费转写)→ 文字填入输入框。
+//
+// UI 自研(仿 ChatGPT/豆包交互形态,未复制任何现成插件代码):
+//   - 内联 SVG 麦克风图标(非 emoji),hover 高亮,28px 圆钮与 DSH 工具栏一致
+//   - 录音中:红色脉冲光晕 + 秒表气泡(0:07)+ 停止方块图标
+//   - 转写中:旋转 spinner
+//   - 错误:按钮旁 toast 气泡,自动消失(不用 alert)
+//
+// 历史修复记录:
+//   1) 旧版按钮 append 进输入框容器,被绝对定位透明 textarea 盖住 → 点不着;
+//      改为挂到工具栏行(row)的右侧簇(trailing),并 position:relative+z-index 兜底。
+//   2) mousedown preventDefault 保持输入框焦点;按 isConnected 重新挂载应对 SPA 重渲染。
 //
 // 挂载方式:window.__ModuleLoader__.load({ id, factory }) —— factory 返回带
 // apply 方法的对象(cordis Koa/Egg 风格 plugin),apply 里执行 DOM 挂载。
-//
-// ⚠️ 为什么旧版按钮"看得见点不着"(2026-08-21 修复):
-//   DSH 输入框 textarea 是 position:absolute; inset:0 的透明层(color:#0000,
-//   文字由 backdrop 层绘制,镜像层定高),绝对定位元素绘制在普通流元素之上。
-//   旧代码把按钮 append 进输入框容器 div.grow(按钮是普通流元素)→ 被透明
-//   textarea 盖住 → 视觉可见但点击全部落在 textarea 上。
-//   修复:按钮挂到工具栏行(row)的右侧簇(trailing,和模型选择器/发送按钮同行),
-//   并设 position:relative + z-index 兜底,保证永远在可点击层级。
 
 const MODULE_ID = 'dsh-audio-copilot'
 const TRANSCRIBE_URL = '/audio-copilot/transcribe'
+const MAX_RECORD_MS = 60000 // 最长录音 60 秒,自动停止
+
+// ── 一次性注入样式 ─────────────────────────────────────────────────────────
+
+const STYLE_ID = 'dac-styles'
+
+function ensureStyles() {
+  if (document.getElementById(STYLE_ID)) return
+  const style = document.createElement('style')
+  style.id = STYLE_ID
+  style.textContent =
+    '.dac-btn{display:inline-flex;align-items:center;justify-content:center;' +
+    'width:28px;height:28px;border-radius:999px;border:none;background:transparent;' +
+    'cursor:pointer;color:var(--dsw-alias-label-secondary,#888);flex:none;' +
+    'position:relative;z-index:10;padding:0;transition:background-color .12s ease,color .12s ease;}' +
+    '.dac-btn:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.14));color:var(--dsw-alias-label-primary,#333);}' +
+    '.dac-btn:active{transform:scale(.94)}' +
+    '.dac-btn svg{width:16px;height:16px;display:block}' +
+    '.dac-btn[data-state="recording"]{color:#e5484d}' +
+    '.dac-btn[data-state="recording"]:after{content:"";position:absolute;inset:-3px;border-radius:999px;' +
+    'border:2px solid rgba(229,72,77,.55);animation:dac-pulse 1.2s ease-out infinite}' +
+    '.dac-btn[data-state="busy"]{color:var(--dsw-alias-label-tertiary,#999);cursor:default}' +
+    '.dac-btn[data-state="busy"] .dac-spin{animation:dac-spin 1s linear infinite}' +
+    '@keyframes dac-pulse{0%{transform:scale(.85);opacity:1}70%{transform:scale(1.35);opacity:0}100%{opacity:0}}' +
+    '@keyframes dac-spin{to{transform:rotate(360deg)}}' +
+    '.dac-pop{position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%);' +
+    'white-space:nowrap;background:var(--dsw-specific-menu,#222);color:var(--dsw-alias-label-primary,#eee);' +
+    'border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.3));border-radius:10px;' +
+    'padding:4px 10px;font-size:12px;line-height:18px;box-shadow:0 4px 14px rgba(0,0,0,.25);' +
+    'z-index:60;display:flex;align-items:center;gap:6px;pointer-events:none}' +
+    '.dac-pop[hidden]{display:none}' +
+    '.dac-pop .dac-dot{width:7px;height:7px;border-radius:50%;background:#e5484d;flex:none;' +
+    'animation:dac-blink 1s steps(2,start) infinite}' +
+    '@keyframes dac-blink{50%{opacity:.3}}' +
+    '.dac-pop.dac-err{border-color:rgba(229,72,77,.6);color:#ff8a8d}' +
+    '.dac-pop.dac-err .dac-dot{display:none}'
+  document.head.appendChild(style)
+}
+
+// ── SVG 图标(自绘,通用图形元素)────────────────────────────────────────────
+
+function iconMic(): string {
+  return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<rect x="9" y="3" width="6" height="11" rx="3"></rect>' +
+    '<path d="M5 11.5a7 7 0 0 0 14 0"></path>' +
+    '<path d="M12 18.5v3"></path>' +
+    '<path d="M8.5 21.5h7"></path></svg>'
+}
+function iconStop(): string {
+  return '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2.5"></rect></svg>'
+}
+function iconSpinner(): string {
+  return '<svg class="dac-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">' +
+    '<path d="M12 3a9 9 0 1 0 9 9"></path></svg>'
+}
+
+// ── 输入框定位与文本写入 ───────────────────────────────────────────────────
 
 function findComposer(): HTMLTextAreaElement | null {
-  // DSH 输入框:带 placeholder 的 textarea(composer card 内唯一的 textarea)
   const textarea = document.querySelector<HTMLTextAreaElement>(
     'textarea[data-composer-card], textarea[placeholder]',
   )
   if (textarea) return textarea
-  // 兜底:任何可见 textarea
   const anyArea = Array.from(document.querySelectorAll<HTMLTextAreaElement>('textarea')).find(
     (t) => t.offsetParent !== null,
   )
@@ -38,19 +96,30 @@ function insertTextIntoComposer(composer: HTMLTextAreaElement, text: string) {
   composer.focus()
 }
 
-function createButton(): HTMLButtonElement {
+// ── 按钮构建与挂载 ─────────────────────────────────────────────────────────
+
+function makeButton(): HTMLButtonElement {
   const btn = document.createElement('button')
   btn.type = 'button'
+  btn.className = 'dac-btn'
   btn.title = '语音输入(录音转文字)'
   btn.setAttribute('aria-label', '语音输入')
-  btn.style.cssText = [
-    'display:inline-flex;align-items:center;justify-content:center;',
-    'width:28px;height:28px;border-radius:999px;border:none;',
-    'background:transparent;cursor:pointer;color:inherit;font-size:14px;line-height:1;',
-    'flex:none;position:relative;z-index:10;padding:0;',
-  ].join('')
-  btn.innerHTML = '🎤'
+  btn.setAttribute('data-state', 'idle')
+  btn.innerHTML = iconMic()
   return btn
+}
+
+// 共享的录音器引用:SPA 重渲染换按钮时,旧的录音要停掉
+const shared: { recorder: MediaRecorder | null; stream: MediaStream | null; timerHandle: number | null } = {
+  recorder: null,
+  stream: null,
+  timerHandle: null,
+}
+
+function stopRecording() {
+  if (shared.recorder && shared.recorder.state !== 'inactive') {
+    try { shared.recorder.stop() } catch { /* noop */ }
+  }
 }
 
 function mountButton() {
@@ -58,14 +127,12 @@ function mountButton() {
   if (!composer) return
   const card = composer.closest<HTMLElement>('[data-composer-card]')
   if (!card) return
-  // 已挂载(或 React 重渲染后残留)→ 跳过,避免重复
   if (card.querySelector('[data-audio-copilot-mic]')) return
 
-  const btn = createButton()
+  const btn = makeButton()
   btn.dataset.audioCopilotMic = 'true'
 
-  // 目标位置:工具栏行(row:含 + 按钮与发送按钮)的右侧簇(trailing)。
-  // 结构:card 的子元素含 [overlay?][accessory?][attachments?] scroll row。
+  // 目标位置:工具栏行(row)的右侧簇(trailing),与模型选择器/发送按钮同行
   const row = Array.from(card.children).find(
     (el) =>
       el instanceof HTMLElement &&
@@ -77,7 +144,6 @@ function mountButton() {
       ? row.lastElementChild
       : null
   if (trailing) {
-    // 插到右侧簇最左(模型选择器之前),与发送按钮同一行
     trailing.insertBefore(btn, trailing.firstChild)
   } else {
     // 兜底:挂到卡片,绝对定位右下角,永远在输入区上方
@@ -88,19 +154,58 @@ function mountButton() {
     card.appendChild(btn)
   }
 
-  let mediaRecorder: MediaRecorder | null = null
-  let chunks: Blob[] = []
-  let recording = false
+  // 状态气泡(计时/转写/错误)
+  const pop = document.createElement('div')
+  pop.className = 'dac-pop'
+  pop.hidden = true
+  btn.appendChild(pop)
+  const popText = document.createElement('span')
+  pop.appendChild(popText)
 
-  const setState = (state: 'idle' | 'recording' | 'busy') => {
+  let recording = false
+  let chunks: Blob[] = []
+  let elapsed = 0
+  let toastHandle: number | null = null
+
+  function setState(state: 'idle' | 'recording' | 'busy', text?: string) {
     recording = state === 'recording'
-    btn.innerHTML = state === 'recording' ? '⏹️' : state === 'busy' ? '⏳' : '🎤'
-    btn.title =
-      state === 'recording'
-        ? '录音中…点击停止'
-        : state === 'busy'
-          ? '转写中…'
-          : '语音输入(录音转文字)'
+    btn.setAttribute('data-state', state)
+    btn.innerHTML = state === 'recording' ? iconStop() : state === 'busy' ? iconSpinner() : iconMic()
+    // innerHTML 重建会清掉气泡,重新拼回来
+    const dot = document.createElement('span')
+    dot.className = 'dac-dot'
+    pop.innerHTML = ''
+    pop.appendChild(dot)
+    pop.appendChild(popText)
+    popText.textContent = text || ''
+    if (state === 'recording' || state === 'busy') {
+      pop.classList.remove('dac-err')
+      pop.hidden = false
+    } else {
+      pop.hidden = true
+    }
+  }
+
+  function showToast(msg: string) {
+    pop.classList.add('dac-err')
+    popText.textContent = msg
+    pop.hidden = false
+    clearTimeout(toastHandle ?? undefined)
+    toastHandle = window.setTimeout(() => { pop.hidden = true }, 5000)
+  }
+
+  function fmtTime(s: number) {
+    const m = Math.floor(s / 60)
+    const r = s % 60
+    return m + ':' + (r < 10 ? '0' : '') + r
+  }
+
+  function tick() {
+    elapsed += 1
+    popText.textContent = fmtTime(elapsed)
+    if (elapsed >= Math.floor(MAX_RECORD_MS / 1000)) {
+      stopRecording() // 到时自动停止(onstop 里收尾)
+    }
   }
 
   // 防止 mousedown 默认行为抢走输入框焦点(与 DSH 自带按钮的 keepFocus 一致)
@@ -108,33 +213,36 @@ function mountButton() {
 
   btn.addEventListener('click', async () => {
     if (recording) {
-      mediaRecorder?.stop()
+      stopRecording()
       return
     }
-    if (mediaRecorder?.state === 'recording') return
+    if (shared.recorder?.state === 'recording') return
     if (!navigator.mediaDevices?.getUserMedia) {
-      alert('当前环境不支持麦克风(无 navigator.mediaDevices)')
+      showToast('当前环境不支持麦克风')
       return
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       chunks = []
-      mediaRecorder = new MediaRecorder(stream)
-      mediaRecorder.ondataavailable = (e) => {
+      shared.stream = stream
+      shared.recorder = new MediaRecorder(stream)
+      const mr = shared.recorder
+      mr.ondataavailable = (e) => {
         if (e.data.size > 0) chunks.push(e.data)
       }
-      mediaRecorder.onstop = async () => {
-        stream.getTracks().forEach((t) => t.stop())
-        setState('busy')
+      mr.onstop = async () => {
+        if (shared.stream) { shared.stream.getTracks().forEach((t) => t.stop()); shared.stream = null }
+        if (shared.timerHandle !== null) clearInterval(shared.timerHandle)
+        setState('busy', '转写中…')
         try {
-          const blob = new Blob(chunks, { type: mediaRecorder?.mimeType || 'audio/webm' })
+          const blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' })
           const form = new FormData()
           form.append('file', blob, 'voice.webm')
           const res = await fetch(TRANSCRIBE_URL, { method: 'POST', body: form })
           const body = await res.json().catch(() => ({}))
           if (!res.ok || typeof body?.text !== 'string') {
             setState('idle')
-            alert(`语音转写失败:${body?.error ?? res.status}`)
+            showToast(body?.error ?? `转写失败(${res.status})`)
             return
           }
           const fresh = findComposer()
@@ -142,35 +250,33 @@ function mountButton() {
           setState('idle')
         } catch (err) {
           setState('idle')
-          alert(`语音转写请求失败:${err instanceof Error ? err.message : String(err)}`)
+          showToast(err instanceof Error ? err.message : String(err))
         }
       }
-      mediaRecorder.start()
-      setState('recording')
+      mr.start()
+      elapsed = 0
+      setState('recording', '0:00')
+      if (shared.timerHandle !== null) clearInterval(shared.timerHandle)
+      shared.timerHandle = window.setInterval(tick, 1000)
     } catch (err) {
-      alert(`无法访问麦克风:${err instanceof Error ? err.message : String(err)}`)
+      showToast(`无法访问麦克风:${err instanceof Error ? err.message : String(err)}`)
     }
   })
 }
 
 // 主入口:等 DOM 就绪后挂按钮;用 MutationObserver 应对 SPA 动态渲染
-// (React 重渲染换掉输入区后,旧按钮随旧 DOM 消失,观察器会重新挂载)。
 function boot() {
-  const tryMount = () => {
-    if (findComposer()) mountButton()
-  }
-  tryMount()
-  const observer = new MutationObserver(() => tryMount())
+  ensureStyles()
+  mountButton()
+  const observer = new MutationObserver(() => mountButton())
   observer.observe(document.body, { childList: true, subtree: true })
+  window.addEventListener('beforeunload', () => stopRecording())
 }
 
 // 挂载形态:window.__ModuleLoader__.load({ id, factory })。DSH 的 cordis
 // plugin loader 会把 factory 的 return value 传给 @deepseek-ai/cordis
 // registry,后者校验"必须为函数 或 含 .apply 方法的对象";否则抛
 // "invalid plugin, expect function or object with an apply method, received ..."
-//
-// 因此 factory 必须 return `{ apply }` 形态(等同 Koa plugin)。apply 同步执行
-// 挂载即可,ctx 不需要(DOM 副作用,不依赖任何 cordis service)。
 ;(window as any).__ModuleLoader__.load({
   id: MODULE_ID,
   factory: function (require: any) {
