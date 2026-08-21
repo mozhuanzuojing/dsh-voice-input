@@ -278,11 +278,9 @@ Gemini 免费档每时段 20 次限流，已自动重试一次；建议换 zhipu
 
 ## 📸 示例截图
 
-> 放置方式：截图保存为 `docs/screenshots/xxx.png`，在此用 Markdown 图片语法引用。补充更多截图会让项目更专业。
-
-| 使用界面 | 语音按钮 | 转写结果 |
+| 语音工作台 | 使用界面 | 工具栏按钮 |
 |---|---|---|
-| ![DSH 聊天界面](docs/screenshots/dsh-chat-example.png) | *(待补图)* | *(待补图)* |
+| ![语音工作台](docs/screenshots/语音工作台.png) | ![使用界面](docs/screenshots/使用界面.png) | ![两个插件+功能按钮](docs/screenshots/两个插件+功能按钮.png) |
 
 ---
 
