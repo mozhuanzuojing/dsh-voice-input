@@ -5,6 +5,13 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.0] - 2026-08-22
+
+### 🗑️ 移除
+
+- **移除 TTS（文字转语音）功能**：删除 `audio_tts` 工具、三引擎实现（sapi/edge/openai）、`tts*` 配置项及 `ws` 依赖。功能聚焦：语音输入转写（🎤）+ audio_transcribe / audio_ask / audio_probe。
+- README / 文档同步更新（去除 TTS 相关说明）。
+
 ## [0.2.0] - 2026-08-22
 
 ### 🚀 全新迭代（四引擎 + 语音输入按钮 + 本地部署）

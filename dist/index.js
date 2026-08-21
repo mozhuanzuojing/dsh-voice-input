@@ -30,14 +30,8 @@ export const Config = Schema.object({
     localAsrThreads: Schema.number().default(4),
     localAsrLanguage: Schema.string().default(''),
     localAsrPrompt: Schema.string().default('DeepSeek, DSH, 智能体, Flash, V4, 语音, 转写'),
-    ttsEngine: Schema.union(['sapi', 'edge', 'openai']).default('sapi'),
-    ttsBaseUrl: Schema.string().default('https://open.bigmodel.cn/api/paas/v4'),
-    ttsModel: Schema.string().default('glm-tts'),
-    ttsApiKeyEnv: Schema.string().default('ZHIPU_API_KEY'),
-    ttsVoice: Schema.string().default('Microsoft Huihui Desktop'),
     maxAudioBytes: Schema.number().default(25 * 1024 * 1024),
     transcribeTimeoutMs: Schema.number().default(120_000),
-    ttsTimeoutMs: Schema.number().default(90_000),
     maxSegments: Schema.number().default(20),
 });
 // ── 小工具 ──────────────────────────────────────────────────────────────────
@@ -112,8 +106,7 @@ function summarizeProbe(probe) {
  *
  * 实现说明:用系统 curl.exe 子进程而非 undici ProxyAgent —— 在 DSH 进程内
  * 动态 import('undici') 的 dispatcher 与运行时 fetch 存在兼容问题(实测
- * "fetch failed");curl 是本机自带、与 TTS 的 powershell 子进程同模式,
- * 且经本机 Clash 代理直连 Gemini 实测 200。
+ * "fetch failed");curl 是本机自带、与 powershell 子进程同模式, * 且经本机 Clash 代理直连 Gemini 实测 200。
  */
 async function transcribeGemini(config, path, signal) {
     const key = process.env[config.geminiApiKeyEnv];
@@ -273,112 +266,6 @@ async function transcribeAudio(config, path, signal) {
             await rm(tmpWav).catch(() => { });
     }
 }
-// ── TTS 三引擎 ──────────────────────────────────────────────────────────────
-// 引擎 1:sapi —— Windows 本地语音,零依赖免 key(默认)
-async function ttsSapi(text, outFile, voice, timeoutMs) {
-    const psScript = `Add-Type -AssemblyName System.Speech; ` +
-        `$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; ` +
-        `try { $s.SelectVoice('${voice.replace(/'/g, "''")}') } catch {} ` +
-        `$s.SetOutputToWaveFile('${outFile.replace(/'/g, "''")}'); ` +
-        `$s.Speak(${JSON.stringify(text)}); ` +
-        `$s.Dispose()`;
-    try {
-        execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', psScript], {
-            timeout: timeoutMs,
-            windowsHide: true,
-            encoding: 'utf8',
-        });
-    }
-    catch (err) {
-        const e = err;
-        if (e?.status === 1) {
-            throw new Error('Windows SAPI TTS failed. Try a different ttsVoice (see "Microsoft Huihui Desktop" / "Microsoft Zira Desktop"), or switch ttsEngine to edge/openai.');
-        }
-        throw err;
-    }
-}
-// 引擎 2:edge —— 微软在线 TTS(免 key,依赖网络可达 speech.platform.bing.com)
-async function ttsEdge(config, text, outFile, signal) {
-    const { default: WebSocket } = await import('ws');
-    const token = '6A5AA1D4EAFF4E9FB37E23D68491D6F4';
-    const url = `wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=${token}&ConnectionId=${crypto.randomUUID().replaceAll('-', '')}`;
-    const audioChunks = [];
-    await new Promise((resolve, reject) => {
-        const ws = new WebSocket(url, {
-            host: 'speech.platform.bing.com',
-            origin: 'chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold',
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/103.0.5060.66 Safari/537.36 Edg/103.0.1264.44' },
-        });
-        const timer = setTimeout(() => {
-            ws.terminate();
-            reject(new Error(`edge-tts timed out after ${config.ttsTimeoutMs}ms`));
-        }, config.ttsTimeoutMs);
-        const done = (err) => {
-            clearTimeout(timer);
-            if (err) {
-                ws.terminate();
-                reject(err);
-            }
-            else {
-                ws.close();
-                resolve();
-            }
-        };
-        ws.on('message', (raw, isBinary) => {
-            if (!isBinary) {
-                const data = raw.toString('utf8');
-                if (data.includes('turn.end'))
-                    done();
-                return;
-            }
-            const separator = 'Path:audio\r\n';
-            const idx = raw.indexOf(separator);
-            if (idx >= 0)
-                audioChunks.push(raw.subarray(idx + separator.length));
-        });
-        ws.on('error', (e) => done(e));
-        ws.on('open', () => {
-            const speechConfig = JSON.stringify({ context: { synthesis: { audio: {
-                            metadataoptions: { sentenceBoundaryEnabled: false, wordBoundaryEnabled: false },
-                            outputFormat: 'audio-24khz-48kbitrate-mono-mp3',
-                        } } } });
-            ws.send(`X-Timestamp:${new Date()}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n${speechConfig}`, { compress: true });
-            const ssml = `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='zh-CN'><voice name='${config.ttsVoice}'><prosody pitch='+0Hz' rate='+0%' volume='+0%'>${escapeXml(text)}</prosody></voice></speak>`;
-            ws.send(`X-RequestId:${crypto.randomUUID().replaceAll('-', '')}\r\nContent-Type:application/ssml+xml\r\nX-Timestamp:${new Date().toISOString()}\r\nPath:ssml\r\n\r\n${ssml}`, { compress: true });
-        });
-        if (signal) {
-            signal.addEventListener('abort', () => done(new Error('cancelled')), { once: true });
-        }
-    });
-    await writeFile(outFile, Buffer.concat(audioChunks));
-}
-// 引擎 3:openai —— 任意 OpenAI 兼容 /audio/speech 端点
-async function ttsOpenAI(config, text, outFile, signal) {
-    const key = process.env[config.ttsApiKeyEnv];
-    if (!key) {
-        throw new Error(`TTS API key not set. Export ${config.ttsApiKeyEnv} with a key for ${config.ttsBaseUrl} ` +
-            `(model: ${config.ttsModel}), or switch ttsEngine to 'sapi' (local, free, no key).`);
-    }
-    const timeoutSignal = AbortSignal.timeout(config.ttsTimeoutMs);
-    const signalAll = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-    const res = await fetch(joinUrl(config.ttsBaseUrl, '/audio/speech'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-        body: JSON.stringify({ model: config.ttsModel, input: text, voice: config.ttsVoice }),
-        signal: signalAll,
-    });
-    if (!res.ok)
-        throw new Error(`TTS HTTP ${res.status}: ${(await res.text()).slice(0, 500)}`);
-    await writeFile(outFile, Buffer.from(await res.arrayBuffer()));
-}
-function escapeXml(s) {
-    return s
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&apos;');
-}
 // ── 时间锚定问答:转写 + 关键词定位 ─────────────────────────────────────────
 function splitSegments(text, maxLen = 120) {
     const sentences = text
@@ -485,52 +372,7 @@ export function apply(ctx, config) {
             }
         },
     }));
-    // 3) audio_tts —— 文字转语音(默认 Windows 本地 SAPI,免 key)
-    ctx.tools.register(defineTool({
-        name: 'audio_tts',
-        description: 'Synthesize speech from text into an audio file. Default engine is Windows local SAPI ' +
-            '(free, offline, no API key); can switch to edge (Microsoft online) or any OpenAI-compatible ' +
-            '/audio/speech endpoint via config. Returns the output file path.',
-        parameters: {
-            text: {
-                type: 'string',
-                required: true,
-                description: 'Text to synthesize into speech',
-            },
-            outputPath: {
-                type: 'string',
-                description: 'Absolute output path for the audio file (default: a temp file)',
-            },
-            voice: {
-                type: 'string',
-                description: 'Override voice (sapi: e.g. "Microsoft Huihui Desktop" zh-CN, "Microsoft Zira Desktop" en-US; edge/openai: endpoint-specific)',
-            },
-        },
-        output: {
-            schema: { type: 'string' },
-            render: (_args, value) => [{ type: 'text', text: value }],
-        },
-        async execute(args, exec) {
-            const voice = args.voice ?? config.ttsVoice;
-            const ext = config.ttsEngine === 'sapi' ? '.wav' : '.mp3';
-            const outFile = args.outputPath ?? join(tmpdir(), `dsh-tts-${Date.now()}${ext}`);
-            const effective = { ...config, ttsVoice: voice };
-            try {
-                if (config.ttsEngine === 'sapi')
-                    await ttsSapi(args.text, outFile, voice, config.ttsTimeoutMs);
-                else if (config.ttsEngine === 'edge')
-                    await ttsEdge(effective, args.text, outFile, exec?.signal);
-                else
-                    await ttsOpenAI(effective, args.text, outFile, exec?.signal);
-                const size = await stat(outFile).then((s) => s.size);
-                return JSON.stringify({ outputPath: outFile, bytes: size, engine: config.ttsEngine, voice }, null, 2);
-            }
-            catch (err) {
-                return toolError(err);
-            }
-        },
-    }));
-    // 4) audio_ask —— 带时间锚定的音频问答
+    // 3) audio_ask —— 带时间锚定的音频问答
     ctx.tools.register(defineTool({
         name: 'audio_ask',
         description: 'Answer a question about a local audio file with time-anchored evidence. Transcribes the audio, ' +
@@ -631,8 +473,8 @@ export function apply(ctx, config) {
         });
         ctx.effect(() => disposer);
     }
-    console.log(`[audio-copilot] registered audio_probe / audio_transcribe / audio_tts / audio_ask ` +
-        `(ASR=${config.asrEngine}${config.asrEngine === 'gemini' ? `:${config.geminiModel}` : `:${config.asrModel}@${config.asrBaseUrl}`}, TTS=${config.ttsEngine})`);
+    console.log(`[audio-copilot] registered audio_probe / audio_transcribe / audio_ask ` +
+        `(ASR=${config.asrEngine}${config.asrEngine === 'gemini' ? `:${config.geminiModel}` : `:${config.asrModel}@${config.asrBaseUrl}`})`);
 }
 function parseMultipart(body, boundary) {
     const delimiter = Buffer.from(`--${boundary}`);

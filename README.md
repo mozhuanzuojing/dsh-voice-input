@@ -35,11 +35,10 @@
 |---|---|
 | 🎤 **语音输入按钮** | 聊天输入框旁的麦克风按钮：点击 → 说话 → 自动转文字填入输入框。多引擎可选，中文/方言/外语通吃 |
 | 📝 **audio_transcribe** | 让 Agent 自己把音频文件/录音转成文字（`/audio/transcriptions` 兼容端点） |
-| 🔊 **audio_tts** | 让 Agent 把文字念出来：默认 **Windows 本地语音（SAPI），免 key 免联网**；可选 Edge 在线 / OpenAI 兼容端点 |
 | 🔍 **audio_ask** | 带时间锚定的音频问答：转写 → 关键词定位 → 返回命中片段与时间戳（"3 分钟时说了什么？"） |
 | 🧪 **audio_probe** | 用 ffprobe 读取音频元数据：容器 / 时长 / 编码 / 采样率 / 声道 |
 
-适合：想让 DSH 听懂你的语音、给你朗读、分析录音的任何人。
+适合：想让 DSH 听懂你的语音、分析录音的任何人。
 
 ---
 
@@ -60,12 +59,6 @@
 | `local` | **本地 faster-whisper**：完全免费、无限用、离线、隐私 | 不花钱 / 离线场景 |
 | `gemini` | 海外多模态，音频理解最强，免费档每时段 20 次限流（429 自动重试） | 海外网络 / 最强语义 |
 | `openai` | 任意 OpenAI 兼容 `/audio/transcriptions` 端点（Whisper / SenseVoice 等） | 已有第三方端点 |
-
-### 🔊 三引擎朗读（TTS）
-
-- `sapi`（默认）：Windows 自带语音，**免费离线**，中文"Microsoft Huihui"、英文"Microsoft Zira/David"
-- `edge`：微软在线 TTS，免 key（需网络可达 speech.platform.bing.com）
-- `openai`：任意 OpenAI 兼容 `/audio/speech` 端点
 
 ### 🛡️ 可靠性设计
 
@@ -108,7 +101,7 @@
 
 - **DSH Desktop** 已安装（本插件基于 DSH 0.1.0-rc.7 线）
 - **Node.js ≥ 20**（DSH 自带 runtime，一般无需另装）
-- **ffmpeg / ffprobe** 在 PATH（Windows 到 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) 下载 full build 解压，把 `bin` 加进系统 PATH）—— TTS(sapi) 不需要，但语音输入/转写需要
+- **ffmpeg / ffprobe** 在 PATH（Windows 到 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) 下载 full build 解压，把 `bin` 加进系统 PATH）—— 语音输入/转写需要
 
 ### 第 1 步：安装插件
 
@@ -197,14 +190,8 @@ dsh --profile web --dump-config | grep audio-copilot
 | `localAsrModel` | `medium` | 本地 whisper 模型：tiny/base/small/medium/large-v3 |
 | `localAsrThreads` | `4` | 本地转写 CPU 线程数 |
 | `localAsrPrompt` | *(空)* | 本地引擎专有名词提示（逗号分隔，如 `DeepSeek, DSH, 智能体`），显著提升术语识别 |
-| `ttsEngine` | `sapi` | TTS 引擎：`sapi`(本地) / `edge`(在线) / `openai`(兼容端点) |
-| `ttsBaseUrl` | `https://open.bigmodel.cn/api/paas/v4` | openai 引擎端点根 |
-| `ttsModel` | `glm-tts` | openai 引擎模型 |
-| `ttsApiKeyEnv` | `ZHIPU_API_KEY` | openai 引擎 key 环境变量 |
-| `ttsVoice` | `Microsoft Huihui Desktop` | 默认音色 |
 | `maxAudioBytes` | `26214400` | 转写文件大小上限（25MB） |
 | `transcribeTimeoutMs` | `120000` | ASR 超时（毫秒） |
-| `ttsTimeoutMs` | `90000` | TTS 超时 |
 | `maxSegments` | `20` | audio_ask 返回命中片段上限 |
 
 ---
@@ -240,7 +227,6 @@ dsh --profile web --dump-config | grep audio-copilot
 
 ```
 「把这个录音转成文字：C:\meeting.wav」         → audio_transcribe
-「把"你好世界"读出来」                          → audio_tts（本地 SAPI）
 「这个会议录音 3 分钟的时候说了什么？」          → audio_ask
 「看看这个音频的格式和时长」                    → audio_probe
 ```

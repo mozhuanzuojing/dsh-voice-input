@@ -1,7 +1,7 @@
 {
   "name": "dsh-audio-copilot",
-  "version": "0.2.0",
-  "description": "Audio Copilot for DeepSeek Harness: transcribe audio (ASR) and synthesize speech (TTS) — gives text-only agents ears and a voice. Windows-local SAPI TTS out of the box; OpenAI-compatible ASR/TTS endpoints configurable. Includes an in-composer voice-input (mic) button.",
+  "version": "0.3.0",
+  "description": "Audio Copilot for DeepSeek Harness: voice input button + ASR transcription (Zhipu GLM-ASR-2512 / local faster-whisper / Gemini / OpenAI) with audio_probe / audio_transcribe / audio_ask tools. 给纯文本模型补上听的能力。",
   "license": "MIT",
   "keywords": [
     "dsh",
@@ -50,8 +50,7 @@
   "dependencies": {
     "@deepseek-ai/dsh-tools": "0.1.0-rc.7",
     "@deepseek-ai/schemastery": "3.18.1",
-    "undici": "^8.10.0",
-    "ws": "^8.21.3"
+    "undici": "^8.10.0"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1"
