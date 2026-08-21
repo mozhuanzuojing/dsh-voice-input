@@ -236,25 +236,42 @@ async function transcribeAudio(config, path, signal) {
     }
     const timeoutSignal = AbortSignal.timeout(config.transcribeTimeoutMs);
     const signalAll = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-    const bytes = await readFile(path);
-    const mime = guessAudioMime(path);
+    // zhipu 引擎:智谱拒绝 webm(实测错误 1214),需先转 16kHz wav 再上传
+    let uploadPath = path;
+    let tmpWav = '';
+    if (config.asrEngine === 'zhipu' && !/\.(wav|mp3|m4a|aac|flac|ogg)$/i.test(path)) {
+        tmpWav = join(tmpdir(), `dsh-zhipu-${Date.now()}.wav`);
+        await execFileAsync('ffmpeg', ['-y', '-i', path, '-ar', '16000', '-ac', '1', tmpWav], {
+            signal: signalAll,
+            maxBuffer: 8 * 1024 * 1024,
+        });
+        uploadPath = tmpWav;
+    }
+    const bytes = await readFile(uploadPath);
+    const mime = tmpWav ? 'audio/wav' : guessAudioMime(path);
     const form = new FormData();
-    form.append('file', new Blob([bytes], { type: mime }), basename(path));
+    form.append('file', new Blob([bytes], { type: mime }), tmpWav ? 'voice.wav' : basename(path));
     form.append('model', config.asrModel);
     form.append('response_format', 'json');
-    const res = await fetch(joinUrl(config.asrBaseUrl, '/audio/transcriptions'), {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${key}` },
-        body: form,
-        signal: signalAll,
-    });
-    if (!res.ok)
-        throw new Error(`ASR HTTP ${res.status}: ${(await res.text()).slice(0, 500)}`);
-    const body = await res.json();
-    const text = typeof body?.text === 'string' ? body.text : '';
-    if (!text)
-        throw new Error(`ASR returned no text: ${JSON.stringify(body).slice(0, 500)}`);
-    return { text, language: body.language };
+    try {
+        const res = await fetch(joinUrl(config.asrBaseUrl, '/audio/transcriptions'), {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${key}` },
+            body: form,
+            signal: signalAll,
+        });
+        if (!res.ok)
+            throw new Error(`ASR HTTP ${res.status}: ${(await res.text()).slice(0, 500)}`);
+        const body = await res.json();
+        const text = typeof body?.text === 'string' ? body.text : '';
+        if (!text)
+            throw new Error(`ASR returned no text: ${JSON.stringify(body).slice(0, 500)}`);
+        return { text, language: body.language };
+    }
+    finally {
+        if (tmpWav)
+            await rm(tmpWav).catch(() => { });
+    }
 }
 // ── TTS 三引擎 ──────────────────────────────────────────────────────────────
 // 引擎 1:sapi —— Windows 本地语音,零依赖免 key(默认)

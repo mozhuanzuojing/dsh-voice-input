@@ -19,7 +19,7 @@
 
 const MODULE_ID = 'dsh-audio-copilot'
 const TRANSCRIBE_URL = '/audio-copilot/transcribe'
-const MAX_RECORD_MS = 60000 // 最长录音 60 秒,自动停止
+const MAX_RECORD_MS = 28000 // 最长录音 28 秒(智谱 ASR 限 30 秒),自动停止
 
 // ── 一次性注入样式 ─────────────────────────────────────────────────────────
 
