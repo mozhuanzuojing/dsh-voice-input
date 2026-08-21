@@ -24,10 +24,12 @@ export const Config = Schema.object({
     geminiProxy: Schema.string().default('http://127.0.0.1:7890'),
     // 本地 ASR(faster-whisper 离线转写,免费无限用,不依赖 API 额度):
     // transcribe.py 位于 localAsrRoot;模型首次使用自动下载(缓存于 ~/.cache/huggingface)
+    // localAsrPrompt:专有名词/术语提示(逗号分隔),显著提升 DeepSeek 等词识别率
     localAsrRoot: Schema.string().default('C:/Users/Admin/ss/DSH_UPGRADE/local-asr'),
-    localAsrModel: Schema.string().default('small'),
+    localAsrModel: Schema.string().default('medium'),
     localAsrThreads: Schema.number().default(4),
     localAsrLanguage: Schema.string().default(''),
+    localAsrPrompt: Schema.string().default('DeepSeek, DSH, 智能体, Flash, V4, 语音, 转写'),
     ttsEngine: Schema.union(['sapi', 'edge', 'openai']).default('sapi'),
     ttsBaseUrl: Schema.string().default('https://open.bigmodel.cn/api/paas/v4'),
     ttsModel: Schema.string().default('glm-tts'),
@@ -199,6 +201,8 @@ async function transcribeLocal(config, path, signal) {
     ];
     if (config.localAsrLanguage)
         args.push(config.localAsrLanguage);
+    if (config.localAsrPrompt)
+        args.push(config.localAsrPrompt);
     try {
         const { stdout } = await execFileAsync('python', args, {
             signal: signalAll,
