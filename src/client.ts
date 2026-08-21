@@ -90,19 +90,23 @@ function findComposer(): HTMLTextAreaElement | null {
 
 function insertTextIntoComposer(composer: HTMLTextAreaElement, text: string) {
   const sep = composer.value && !composer.value.endsWith('\n') ? '\n' : ''
-  const next = composer.value + sep + text
-  // React 受控组件:直接赋 .value 不会更新 React 内部状态,导致可见层
-  // (backdrop 镜像)不渲染新文字(症状:转写后看不到字,拖一下才出现)。
-  // 用原型链上的原生 value setter 绕过 React 的 value tracker,
-  // 再派发 input 事件让 React onChange → setDraft 真正生效。
-  const proto = Object.getPrototypeOf(composer) as HTMLTextAreaElement
-  const setter = Object.getOwnPropertyDescriptor(proto, 'value')
-  if (setter?.set) setter.set.call(composer, next)
-  else composer.value = next
-  composer.dispatchEvent(
-    new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }),
-  )
+  // 最接近真实用户输入的注入方式:execCommand('insertText') 走浏览器原生
+  // 编辑命令链,React 受控组件完整兼容(直接赋 .value / 原型 setter 都会被
+  // React value tracker + restoreControlledState 重置或吞掉,实测过两种都坏)。
   composer.focus()
+  const fallback = () => {
+    composer.value = composer.value + sep + text
+    composer.dispatchEvent(
+      new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }),
+    )
+  }
+  try {
+    composer.setSelectionRange(composer.value.length, composer.value.length)
+    const ok = document.execCommand('insertText', false, sep + text)
+    if (!ok) fallback()
+  } catch {
+    fallback()
+  }
 }
 
 // ── 按钮构建与挂载 ─────────────────────────────────────────────────────────
