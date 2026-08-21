@@ -90,22 +90,23 @@ function findComposer(): HTMLTextAreaElement | null {
 
 function insertTextIntoComposer(composer: HTMLTextAreaElement, text: string) {
   const sep = composer.value && !composer.value.endsWith('\n') ? '\n' : ''
-  // 最接近真实用户输入的注入方式:execCommand('insertText') 走浏览器原生
-  // 编辑命令链,React 受控组件完整兼容(直接赋 .value / 原型 setter 都会被
-  // React value tracker + restoreControlledState 重置或吞掉,实测过两种都坏)。
+  const next = composer.value + sep + text
+  // React 受控组件标准注入(社区验证方案):
+  // 1) 用原型链原生 value setter 赋值,绕过实例上被 React tracker 包裹的 setter
+  // 2) 手动同步 React 的 _valueTracker,否则 restoreControlledState 会把
+  //    这个"非 React 写入"的值强制重置回旧状态(实测 execCommand 和裸赋值都栽在这)
+  // 3) 派发 input 事件 → React onChange → setDraft → 草稿更新 → 可见层重渲染
+  const desc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(composer), 'value')
+  if (desc?.set) desc.set.call(composer, next)
+  else composer.value = next
+  const tracker = (composer as HTMLTextAreaElement & { _valueTracker?: { setValue(v: string): void } })._valueTracker
+  tracker?.setValue?.(next)
+  composer.dispatchEvent(new Event('input', { bubbles: true }))
   composer.focus()
-  const fallback = () => {
-    composer.value = composer.value + sep + text
-    composer.dispatchEvent(
-      new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }),
-    )
-  }
   try {
-    composer.setSelectionRange(composer.value.length, composer.value.length)
-    const ok = document.execCommand('insertText', false, sep + text)
-    if (!ok) fallback()
+    composer.setSelectionRange(next.length, next.length)
   } catch {
-    fallback()
+    // 忽略 selection 异常
   }
 }
 
