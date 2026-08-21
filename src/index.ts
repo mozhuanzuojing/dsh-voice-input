@@ -30,7 +30,10 @@ const execFileAsync = promisify(execFile)
 
 export const name = 'audio-copilot'
 
-export const inject = ['tools']
+// 必须等 webServer 就绪才能注册 /audio-copilot/transcribe 路由:
+// 之前只 inject 'tools',apply 时 ctx.get('webServer') 返回 undefined,
+// 路由注册被静默跳过(浏览器 405/SPA fallback),按钮点击转写必然失败。
+export const inject = ['tools', 'webServer']
 
 // ── 配置 schema ─────────────────────────────────────────────────────────────
 
