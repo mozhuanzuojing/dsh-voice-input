@@ -157,7 +157,14 @@ function summarizeProbe(probe: any) {
 
 // ── ASR:三引擎(gemini 多模态默认 / zhipu / openai 兼容)──────────────────
 
-/** gemini 引擎:多模态模型直接吃音频(webm/wav/mp3 皆可),免费额度,走 generateContent。 */
+/**
+ * gemini 引擎:多模态模型直接吃音频(webm/wav/mp3 皆可),免费额度,走 generateContent。
+ *
+ * 实现说明:用系统 curl.exe 子进程而非 undici ProxyAgent —— 在 DSH 进程内
+ * 动态 import('undici') 的 dispatcher 与运行时 fetch 存在兼容问题(实测
+ * "fetch failed");curl 是本机自带、与 TTS 的 powershell 子进程同模式,
+ * 且经本机 Clash 代理直连 Gemini 实测 200。
+ */
 async function transcribeGemini(config: Config, path: string, signal?: AbortSignal) {
   const key = process.env[config.geminiApiKeyEnv]
   if (!key) {
@@ -171,36 +178,40 @@ async function transcribeGemini(config: Config, path: string, signal?: AbortSign
 
   const bytes = await readFile(path)
   const mime = guessAudioMime(path)
-  const body = {
+  const body = JSON.stringify({
     contents: [{
       parts: [
         { inline_data: { mime_type: mime, data: bytes.toString('base64') } },
         { text: '请把这段语音完整转写成文字，只输出转写结果，不要任何解释。' },
       ],
     }],
+  })
+  const tmpJson = join(tmpdir(), `dsh-gemini-${Date.now()}.json`)
+  await writeFile(tmpJson, body, 'utf8')
+  try {
+    const url = `${joinUrl(config.geminiBaseUrl, '')}/v1beta/models/${config.geminiModel}:generateContent?key=${encodeURIComponent(key)}`
+    const proxy = config.geminiProxy || process.env.HTTPS_PROXY || process.env.http_proxy || ''
+    const args = [
+      '-sS', '-w', '\n%{http_code}', '-X', 'POST', url,
+      '-H', 'content-type: application/json',
+      '--data', `@${tmpJson}`,
+      '--max-time', String(Math.max(30, Math.floor(config.transcribeTimeoutMs / 1000))),
+    ]
+    if (proxy) args.push('--proxy', proxy)
+    const { stdout } = await execFileAsync('curl.exe', args, { signal: signalAll, maxBuffer: 8 * 1024 * 1024 })
+    const lines = stdout.trimEnd().split('\n')
+    const status = Number(lines.pop())
+    const out = lines.join('\n')
+    if (status !== 200) throw new Error(`Gemini ASR HTTP ${status}: ${out.slice(0, 500)}`)
+    const data: any = JSON.parse(out)
+    const text = Array.isArray(data?.candidates?.[0]?.content?.parts)
+      ? data.candidates[0].content.parts.map((p: any) => (typeof p?.text === 'string' ? p.text : '')).join('').trim()
+      : ''
+    if (!text) throw new Error(`Gemini ASR returned no text: ${JSON.stringify(data).slice(0, 500)}`)
+    return { text, language: null }
+  } finally {
+    await rm(tmpJson).catch(() => {})
   }
-  const url = `${joinUrl(config.geminiBaseUrl, '')}/v1beta/models/${config.geminiModel}:generateContent?key=${encodeURIComponent(key)}`
-  const proxy = config.geminiProxy || process.env.HTTPS_PROXY || process.env.http_proxy || ''
-  // 注意:init 用 any 规避 undici 8 与全局 FormData/RequestInit 的类型冲突
-  const init: any = {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: signalAll,
-  }
-  if (proxy) {
-    // undici ProxyAgent 走本机代理(如 Clash),Gemini 需要
-    const { ProxyAgent } = await import('undici')
-    init.dispatcher = new ProxyAgent(proxy)
-  }
-  const res = await fetch(url, init)
-  if (!res.ok) throw new Error(`Gemini ASR HTTP ${res.status}: ${(await res.text()).slice(0, 500)}`)
-  const data: any = await res.json()
-  const text = Array.isArray(data?.candidates?.[0]?.content?.parts)
-    ? data.candidates[0].content.parts.map((p: any) => (typeof p?.text === 'string' ? p.text : '')).join('').trim()
-    : ''
-  if (!text) throw new Error(`Gemini ASR returned no text: ${JSON.stringify(data).slice(0, 500)}`)
-  return { text, language: null }
 }
 
 async function transcribeAudio(config: Config, path: string, signal?: AbortSignal) {
