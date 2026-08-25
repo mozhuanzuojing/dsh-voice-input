@@ -5,5 +5,5 @@
 # or the installation fallback `$DSH_HOME/profiles/node_modules`), NOT a
 # relative path. `dsh-audio-copilot` is this package's main entry (→ dist/index.js).
 - insert:
-    - id: audio-copilot
-      name: dsh-audio-copilot
+    - id: dsh-voice-input
+      name: dsh-voice-input

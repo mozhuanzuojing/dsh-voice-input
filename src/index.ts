@@ -1,4 +1,4 @@
-// dsh-audio-copilot — 语音输入:给纯文本模型补上"听"的能力。
+// dsh-voice-input — 语音输入:给纯文本模型补上"听"的能力(支持 Web Speech + Gemini 等多引擎)。
 //
 // 能力:聊天框语音输入按钮(录音→多引擎转写→文字填入输入框)。
 //
@@ -21,9 +21,9 @@ const execFileAsync = promisify(execFile)
 
 // ── 插件身份与依赖 ─────────────────────────────────────────────────────────
 
-export const name = 'audio-copilot'
+export const name = 'dsh-voice-input'
 
-// 必须等 webServer 就绪才能注册 /audio-copilot/transcribe 路由:
+// 必须等 webServer 就绪才能注册 /dsh-voice-input/transcribe 路由:
 // 之前只 inject 'tools',apply 时 ctx.get('webServer') 返回 undefined,
 // 路由注册被静默跳过(浏览器 405/SPA fallback),按钮点击转写必然失败。
 export const inject = ['tools', 'webServer']
@@ -60,9 +60,10 @@ export const Config: Schema<Config> = Schema.object({
   asrModel: Schema.string().default('glm-asr-2512'),
   asrApiKeyEnv: Schema.string().default('ZHIPU_API_KEY'),
   geminiApiKeyEnv: Schema.string().default('GEMINI_API_KEY'),
-  geminiModel: Schema.string().default('gemini-3.6-flash'),
+  geminiModel: Schema.string().default('gemini-2.5-flash'),
   geminiBaseUrl: Schema.string().default('https://generativelanguage.googleapis.com'),
-  geminiProxy: Schema.string().default('http://127.0.0.1:7890'),
+  // 留空时自动回退到 process.env.HTTPS_PROXY / http_proxy；本机走 9910 美国节点。
+  geminiProxy: Schema.string().default(''),
   // 本地 ASR(faster-whisper 离线转写,免费无限用,不依赖 API 额度):
   // transcribe.py 位于 localAsrRoot;模型首次使用自动下载(缓存于 ~/.cache/huggingface)
   // localAsrPrompt:专有名词/术语提示(逗号分隔),显著提升 DeepSeek 等词识别率
@@ -153,8 +154,10 @@ async function transcribeGemini(config: Config, path: string, signal?: AbortSign
     }
     // Gemini 免费额度会 429 限流(提示 "Please retry in Ns"):等待后重试一次
     let lastError: Error | null = null
+    // Windows 用原生 curl.exe；Linux/macOS 用系统 curl（本机 WSL 无 curl.exe）。
+    const curlBin = process.platform === 'win32' ? 'curl.exe' : 'curl'
     for (let attempt = 0; attempt < 2; attempt++) {
-      const { stdout } = await execFileAsync('curl.exe', mkArgs(), { signal: signalAll, maxBuffer: 8 * 1024 * 1024 })
+      const { stdout } = await execFileAsync(curlBin, mkArgs(), { signal: signalAll, maxBuffer: 8 * 1024 * 1024 })
       const lines = stdout.trimEnd().split('\n')
       const status = Number(lines.pop())
       const out = lines.join('\n')
@@ -277,13 +280,13 @@ async function transcribeAudio(config: Config, path: string, signal?: AbortSigna
 
 export function apply(ctx: Context, config: Config) {
   // ── host 半:语音输入按钮的转写路由 ────────────────────────────────────
-  // POST /audio-copilot/transcribe —— 接收浏览器麦克风录制的音频 blob,
+  // POST /dsh-voice-input/transcribe —— 接收浏览器麦克风录制的音频 blob,
   // 存临时文件 → 调 ASR → 返回 { text }。客户端(浏览器)由此拿到文字并填入输入框。
   const webserver = ctx.get('webServer') as { register: (route: { kind: string; path: string; handler: (req: any, res: any) => void | Promise<void> }) => (() => void) } | undefined
   if (webserver) {
     const disposer = webserver.register({
       kind: 'exact',
-      path: '/audio-copilot/transcribe',
+      path: '/dsh-voice-input/transcribe',
       handler: async (req: any, res: any) => {
         try {
           // 读请求体为 Buffer(浏览器 FormData 的 file 字段)
@@ -300,12 +303,18 @@ export function apply(ctx: Context, config: Config) {
           const fileField = parts.find((p) => p.name === 'file')
           const audioBytes = fileField ? fileField.data : body
 
+          // 客户端可选引擎:POST 里带 engine 字段则优先,否则用配置默认
+          const engineField = parts.find((p) => p.name === 'engine')
+          const requested = engineField ? engineField.data.toString('utf8').trim() : ''
+          const engines = ['gemini', 'zhipu', 'openai', 'local']
+          const effectiveEngine = engines.includes(requested) ? (requested as any) : config.asrEngine
+
           // 引擎密钥检查(按引擎区分,给可操作报错)
-          const key = config.asrEngine === 'gemini'
+          const key = effectiveEngine === 'gemini'
             ? process.env[config.geminiApiKeyEnv]
             : process.env[config.asrApiKeyEnv]
           if (!key) {
-            const envName = config.asrEngine === 'gemini' ? config.geminiApiKeyEnv : config.asrApiKeyEnv
+            const envName = effectiveEngine === 'gemini' ? config.geminiApiKeyEnv : config.asrApiKeyEnv
             return send(res, 400, { error: `ASR key ${envName} not set` })
           }
           if (audioBytes.length > config.maxAudioBytes) return send(res, 413, { error: 'audio too large' })
@@ -317,7 +326,7 @@ export function apply(ctx: Context, config: Config) {
           const tmp = join(tmpdir(), `dsh-voice-${Date.now()}${ext}`)
           await writeFile(tmp, audioBytes)
           try {
-            const result = await transcribeAudio(config, tmp)
+            const result = await transcribeAudio({ ...config, asrEngine: effectiveEngine }, tmp)
             send(res, 200, { text: result.text, language: result.language ?? null })
           } finally {
             await rm(tmp).catch(() => {})
@@ -331,7 +340,7 @@ export function apply(ctx: Context, config: Config) {
   }
 
   console.log(
-    `[audio-copilot] voice-input button registered ` +
+    `[dsh-voice-input] voice-input button registered ` +
     `(ASR=${config.asrEngine}${config.asrEngine === 'gemini' ? `:${config.geminiModel}` : `:${config.asrModel}@${config.asrBaseUrl}`})`,
   )
 }

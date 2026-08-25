@@ -1,7 +1,7 @@
 {
-  "name": "dsh-audio-copilot",
-  "version": "0.4.0",
-  "description": "聊天框语音输入按钮 for DeepSeek Harness: 点击麦克风说话,多引擎转写(智谱 GLM-ASR-2512 / 本地 faster-whisper / Gemini / OpenAI)自动填入输入框。一个按钮,所见即所得。",
+  "name": "dsh-voice-input",
+  "version": "0.5.0",
+  "description": "聊天框语音输入按钮 for DeepSeek Harness(本地改造版):支持 Web Speech API(Chrome/Edge 免 key 实时)与 Gemini 等服务端 ASR,点击麦克风说话自动填入输入框。",
   "license": "MIT",
   "keywords": [
     "dsh",
@@ -48,7 +48,6 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@deepseek-ai/dsh-tools": "0.1.0-rc.7",
     "@deepseek-ai/schemastery": "3.18.1",
     "undici": "^8.10.0"
   },
@@ -63,11 +62,11 @@
   },
   "author": "yucheng-ai (ai-yucheng)",
   "repository": {
-    "url": "https://github.com/ai-yucheng/dsh-audio-copilot.git",
+    "url": "https://github.com/mozhuanzuojing/dsh-voice-input.git",
     "type": "git"
   },
-  "homepage": "https://github.com/ai-yucheng/dsh-audio-copilot#readme",
+  "homepage": "https://github.com/mozhuanzuojing/dsh-voice-input#readme",
   "bugs": {
-    "url": "https://github.com/ai-yucheng/dsh-audio-copilot/issues"
+    "url": "https://github.com/mozhuanzuojing/dsh-voice-input/issues"
   }
 }

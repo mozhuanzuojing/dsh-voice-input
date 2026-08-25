@@ -1,7 +1,8 @@
-// dsh-audio-copilot client half — 在聊天输入框工具栏注入"语音输入"麦克风按钮。
+// dsh-voice-input client half — 在聊天输入框工具栏注入"语音输入"麦克风按钮。
 //
 // 交互:点击麦克风 → MediaRecorder 录音(红点脉冲 + 计时)→ 停止 →
-// POST host /audio-copilot/transcribe(Gemini 多模态免费转写)→ 文字填入输入框。
+// POST host /voice-input/transcribe(Gemini 多模态免费转写)→ 文字填入输入框。
+// Chrome/Edge 支持 Web Speech API 时优先浏览器原生识别,免 key、实时。
 //
 // UI 自研(仿 ChatGPT/豆包交互形态,未复制任何现成插件代码):
 //   - 内联 SVG 麦克风图标(非 emoji),hover 高亮,28px 圆钮与 DSH 工具栏一致
@@ -17,9 +18,31 @@
 // 挂载方式:window.__ModuleLoader__.load({ id, factory }) —— factory 返回带
 // apply 方法的对象(cordis Koa/Egg 风格 plugin),apply 里执行 DOM 挂载。
 
-const MODULE_ID = 'dsh-audio-copilot'
-const TRANSCRIBE_URL = '/audio-copilot/transcribe'
+const MODULE_ID = 'dsh-voice-input'
+const TRANSCRIBE_URL = '/dsh-voice-input/transcribe'
 const MAX_RECORD_MS = 28000 // 最长录音 28 秒(智谱 ASR 限 30 秒),自动停止
+
+// 浏览器原生 Web Speech(Chrome/Edge):支持则优先用它做实时语音输入,免 key;
+// 不支持时回退到 MediaRecorder → host(服务端 Gemini/智谱/本地 Whisper)。
+function supportsWebSpeech(): boolean {
+  const w = window as any
+  return typeof w.SpeechRecognition !== 'undefined' || typeof w.webkitSpeechRecognition !== 'undefined'
+}
+
+// 引擎选择:Web Speech 走浏览器原生(免 key/实时);其余走服务端 ASR。
+const ENGINE_KEY = 'dsh-voice-input.engine'
+const ENGINES = [
+  { value: 'webspeech', label: 'Web Speech' },
+  { value: 'gemini', label: 'Gemini' },
+  { value: 'zhipu', label: '智谱' },
+  { value: 'local', label: '本地' },
+  { value: 'openai', label: 'OpenAI' },
+]
+function getEngine(): string {
+  const stored = localStorage.getItem(ENGINE_KEY)
+  if (stored && ENGINES.some((e) => e.value === stored)) return stored
+  return supportsWebSpeech() ? 'webspeech' : 'gemini'
+}
 
 // ── 一次性注入样式 ─────────────────────────────────────────────────────────
 
@@ -37,6 +60,7 @@ function ensureStyles() {
     '.dac-btn:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.14));color:var(--dsw-alias-label-primary,#333);}' +
     '.dac-btn:active{transform:scale(.94)}' +
     '.dac-btn svg{width:16px;height:16px;display:block}' +
+    '.dac-engine{height:26px;max-width:104px;border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.3));border-radius:7px;background:var(--dsw-alias-bg-layer-1,#f5f6f8);color:var(--dsw-alias-label-secondary,#666);font:inherit;font-size:11px;line-height:1;padding:0 4px;flex:none;cursor:pointer;}' +
     '.dac-btn[data-state="recording"]{color:#e5484d}' +
     '.dac-btn[data-state="recording"]:after{content:"";position:absolute;inset:-3px;border-radius:999px;' +
     'border:2px solid rgba(229,72,77,.55);animation:dac-pulse 1.2s ease-out infinite}' +
@@ -133,13 +157,18 @@ function makeButton(): HTMLButtonElement {
 }
 
 // 共享的录音器引用:SPA 重渲染换按钮时,旧的录音要停掉
-const shared: { recorder: MediaRecorder | null; stream: MediaStream | null; timerHandle: number | null } = {
+const shared: { recorder: MediaRecorder | null; stream: MediaStream | null; timerHandle: number | null; rec: any } = {
   recorder: null,
   stream: null,
   timerHandle: null,
+  rec: null,
 }
 
 function stopRecording() {
+  if (shared.rec) {
+    try { shared.rec.stop() } catch { /* noop */ }
+    return
+  }
   if (shared.recorder && shared.recorder.state !== 'inactive') {
     try { shared.recorder.stop() } catch { /* noop */ }
   }
@@ -150,10 +179,10 @@ function mountButton() {
   if (!composer) return
   const card = composer.closest<HTMLElement>('[data-composer-card]')
   if (!card) return
-  if (card.querySelector('[data-audio-copilot-mic]')) return
+  if (card.querySelector('[data-voice-input-mic]')) return
 
   const btn = makeButton()
-  btn.dataset.audioCopilotMic = 'true'
+  btn.dataset.voiceInputMic = 'true'
 
   // 目标位置:工具栏行(row)的右侧簇(trailing),与模型选择器/发送按钮同行
   const row = Array.from(card.children).find(
@@ -166,8 +195,25 @@ function mountButton() {
     row?.lastElementChild instanceof HTMLElement && /trailing/.test(row.lastElementChild.className)
       ? row.lastElementChild
       : null
+  // 引擎选择下拉(Web Speech / Gemini / 智谱 / 本地 / OpenAI)
+  const engineSelect = document.createElement('select')
+  engineSelect.className = 'dac-engine'
+  engineSelect.title = '语音输入引擎'
+  engineSelect.setAttribute('aria-label', '语音输入引擎')
+  for (const e of ENGINES) {
+    const opt = document.createElement('option')
+    opt.value = e.value
+    opt.textContent = e.label
+    engineSelect.appendChild(opt)
+  }
+  engineSelect.value = getEngine()
+  engineSelect.addEventListener('change', () => {
+    localStorage.setItem(ENGINE_KEY, engineSelect.value)
+  })
+
   if (trailing) {
     trailing.insertBefore(btn, trailing.firstChild)
+    trailing.insertBefore(engineSelect, btn)
   } else {
     // 兜底:挂到卡片,绝对定位右下角,永远在输入区上方
     btn.style.position = 'absolute'
@@ -234,12 +280,72 @@ function mountButton() {
   // 防止 mousedown 默认行为抢走输入框焦点(与 DSH 自带按钮的 keepFocus 一致)
   btn.addEventListener('mousedown', (e) => e.preventDefault())
 
+  // ── 浏览器 Web Speech API 路径(Chrome/Edge 原生,免 key,实时)──
+  function startWebSpeech() {
+    const w = window as any
+    const SR = w.SpeechRecognition || w.webkitSpeechRecognition
+    if (!SR) { showToast('当前浏览器不支持 Web Speech'); return }
+    if (shared.rec) return
+    const rec = new SR()
+    shared.rec = rec
+    let finalText = ''
+    rec.lang = w.__dshVoiceLang__ || 'zh-CN'
+    rec.continuous = true
+    rec.interimResults = true
+    const cleanup = () => {
+      if (shared.timerHandle !== null) clearInterval(shared.timerHandle)
+      shared.rec = null
+    }
+    rec.onresult = (e: any) => {
+      let interim = ''
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const r = e.results[i]
+        if (r.isFinal) finalText += r[0].transcript
+        else interim += r[0].transcript
+      }
+      const display = (finalText + interim).trim() || fmtTime(elapsed)
+      popText.textContent = display
+    }
+    rec.onerror = (e: any) => {
+      cleanup()
+      setState('idle')
+      showToast('语音识别错误:' + (e?.error || 'unknown'))
+    }
+    rec.onend = () => {
+      cleanup()
+      const text = finalText.trim()
+      if (text) {
+        const fresh = findComposer()
+        if (fresh) insertTextIntoComposer(fresh, text)
+      }
+      setState('idle')
+    }
+    try {
+      rec.start()
+      elapsed = 0
+      setState('recording', '0:00')
+      if (shared.timerHandle !== null) clearInterval(shared.timerHandle)
+      shared.timerHandle = window.setInterval(tick, 1000)
+    } catch (err) {
+      cleanup()
+      setState('idle')
+      showToast('语音识别启动失败:' + (err instanceof Error ? err.message : String(err)))
+    }
+  }
+
   btn.addEventListener('click', async () => {
     if (recording) {
       stopRecording()
       return
     }
-    if (shared.recorder?.state === 'recording') return
+    if (shared.rec) return
+    // 优先浏览器原生 Web Speech(Chrome/Edge 免 key、实时);不支持时回退 MediaRecorder→host(Gemini 等)
+    const engine = getEngine()
+    if (engine === 'webspeech' && supportsWebSpeech()) {
+      startWebSpeech()
+      return
+    }
+    // 否则走 MediaRecorder→服务端;engine 为 gemini/zhipu/local/openai 时随请求携带 engine 字段
     if (!navigator.mediaDevices?.getUserMedia) {
       showToast('当前环境不支持麦克风')
       return
@@ -261,6 +367,8 @@ function mountButton() {
           const blob = new Blob(chunks, { type: mr.mimeType || 'audio/webm' })
           const form = new FormData()
           form.append('file', blob, 'voice.webm')
+          const engine = getEngine()
+          if (engine !== 'webspeech') form.append('engine', engine)
           const res = await fetch(TRANSCRIBE_URL, { method: 'POST', body: form })
           const body = await res.json().catch(() => ({}))
           if (!res.ok || typeof body?.text !== 'string') {
