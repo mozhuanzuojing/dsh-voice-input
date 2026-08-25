@@ -9,7 +9,7 @@
     "deepseek-harness",
     "audio",
     "asr",
-    "tts",
+    "webspeech",
     "speech",
     "transcribe",
     "voice",
@@ -60,7 +60,7 @@
     "@types/ws": "^8.18.1",
     "typescript": "^5.6.0"
   },
-  "author": "yucheng-ai (ai-yucheng)",
+  "author": "mozhuanzuojing",
   "repository": {
     "url": "https://github.com/mozhuanzuojing/dsh-voice-input.git",
     "type": "git"

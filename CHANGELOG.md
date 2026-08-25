@@ -5,6 +5,16 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.5.0] - 2026-08-25
+
+### 🚀 本地改造版：改名 dsh-voice-input + Web Speech 支持
+
+- **改名**：`dsh-audio-copilot` → `dsh-voice-input`（package name / cordis id / 路由 `/dsh-voice-input/transcribe`），发布为新仓库 [mozhuanzuojing/dsh-voice-input](https://github.com/mozhuanzuojing/dsh-voice-input)
+- **新增浏览器原生 Web Speech API**：Chrome/Edge 支持时优先用浏览器识别（免 key、实时、不耗 API 额度），按钮下拉可选 `webspeech`
+- **移除 `@deepseek-ai/dsh-tools` 依赖**
+- **跟随最新 DSH**：升级到 `0.1.1-rc.2` 线，按官方 bundle 规范接入并持续兼容
+- README / CHANGELOG / package.json 同步改为 dsh-voice-input 并指向新仓库
+
 ## [0.4.0] - 2026-08-22
 
 ### 🗑️ 精简（用户反馈：只保留有界面入口的功能）

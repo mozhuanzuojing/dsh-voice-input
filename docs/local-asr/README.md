@@ -24,7 +24,7 @@ cp transcribe.py C:/Users/<你>/dsh-local-asr/
 `cordis.patch.yml`：
 
 ```yaml
-- id: audio-copilot
+- id: dsh-voice-input
   config:
     asrEngine: local
     localAsrRoot: C:/Users/<你>/dsh-local-asr

@@ -1,13 +1,17 @@
-# 🎙️ dsh-audio-copilot · 语音工作台
+# 🎙️ dsh-voice-input · 语音输入
 
-> 给纯文本模型补上"听"和"说"的能力 —— DeepSeek Harness (DSH) 音频插件。
-> **Audio Copilot: give your text-only agent ears and a voice.**
+> 给纯文本模型补上"听"的能力 —— DeepSeek Harness (DSH) 语音输入插件。
+> **Voice Input: give your text-only agent an ear.**
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![DSH](https://img.shields.io/badge/DSH-0.1.0--rc.7-4D6BFE.svg)](https://github.com/deepseek-ai/deepseek-harness)
-[![GitHub](https://img.shields.io/badge/GitHub-ai--yucheng-181717?logo=github)](https://github.com/ai-yucheng/dsh-audio-copilot)
+[![DSH](https://img.shields.io/badge/DSH-0.1.1--rc.2-4D6BFE.svg)](https://github.com/deepseek-ai/deepseek-harness)
+[![GitHub](https://img.shields.io/badge/GitHub-mozhuanzuojing-181717?logo=github)](https://github.com/mozhuanzuojing/dsh-voice-input)
 
-纯文本模型（如 DeepSeek-V4-Flash）天生**听不懂音频、说不出话**。本插件为它补齐这两块能力，并附赠一个**聊天框语音输入按钮**——对着麦克风说话，转成文字自动填入输入框，说完即发。
+> **兼容性**：本插件跟随最新 DeepSeek Harness（当前 `dsh --version` = `0.1.1-rc.2`），
+> 按 DSH 官方 bundle 规范（`dsh.bundle.patch` + `dsh.client.inject`）接入，随 Harness 小版本持续兼容。
+
+纯文本模型（如 DeepSeek-V4-Flash）天生**听不到音频**。本插件为它补上"听"的能力——
+一个**聊天框语音输入按钮**：对着麦克风说话，转成文字自动填入输入框，说完即发。
 
 ---
 
@@ -43,18 +47,22 @@
 ### 🎤 语音输入按钮（最常用）
 
 - 浏览器端麦克风录音 → 服务端转写 → **文字自动填入输入框**
+- **浏览器原生 Web Speech**（Chrome/Edge）：免 key、实时，支持则优先使用
 - 录音 UI：红色脉冲光晕 + 秒表计时 + 停止方块 + 转写 spinner
 - 最长录音 **28 秒**（适配智谱 GLM-ASR 的 30 秒上限），到点自动停止
 - 转写失败**大声提示**（错误信息可操作），绝不"没动静"；注入失败自动把结果复制到剪贴板
 
-### 🧠 四引擎转写（自由切换，不锁定厂商）
+### 🧠 多引擎转写（Web Speech + 服务端四引擎，自由切换）
 
 | 引擎 | 特点 | 适用 |
 |---|---|---|
+| `webspeech` | **浏览器原生 Web Speech API**（Chrome/Edge，免 key、实时、不耗 API 额度） | 免 key / 想立刻说话（默认，支持则优先） |
+| `gemini` | 海外多模态，音频理解最强，免费档每时段 20 次限流（429 自动重试） | 海外网络 / 最强语义 |
 | `zhipu` | **国内直连**，GLM-ASR-2512：中文普通话 + 四川/粤/闽/吴方言 + 数十种外语，CER 0.07 顶级，价格极低 | 🇨🇳 国内用户首选 |
 | `local` | **本地 faster-whisper**：完全免费、无限用、离线、隐私 | 不花钱 / 离线场景 |
-| `gemini` | 海外多模态，音频理解最强，免费档每时段 20 次限流（429 自动重试） | 海外网络 / 最强语义 |
 | `openai` | 任意 OpenAI 兼容 `/audio/transcriptions` 端点（Whisper / SenseVoice 等） | 已有第三方端点 |
+
+> `webspeech` 在浏览器端完成识别，无需服务端配置；其余引擎由服务端 `/dsh-voice-input/transcribe` 路由转写。
 
 ### 🛡️ 可靠性设计
 
@@ -70,13 +78,14 @@
 ```
 ┌──────────────────────── 浏览器端 (dsh.client) ────────────────────────┐
 │  聊天输入框工具栏 ── 🎤 按钮                                            │
-│    getUserMedia 录音 → MediaRecorder → webm Blob                       │
+│    Web Speech: 浏览器原生识别(免 key,实时) → 直接填入输入框              │
+│    MediaRecorder: getUserMedia 录音 → webm Blob → 服务端转写           │
 │        │                                                               │
-│        └── POST /audio-copilot/transcribe (multipart)                  │
+│        └── POST /dsh-voice-input/transcribe (multipart)                │
 └───────────────┬────────────────────────────────────────────────────────┘
                 ▼
 ┌──────────────────────── 服务端 (cordis 插件) ──────────────────────────┐
-│  /audio-copilot/transcribe 路由                                        │
+│  /dsh-voice-input/transcribe 路由                                      │
 │    ├─ zhipu  : ffmpeg webm→wav → 智谱 GLM-ASR-2512 (OpenAI 兼容)       │
 │    ├─ local  : python transcribe.py (faster-whisper, CPU int8)         │
 │    ├─ gemini : curl → Gemini generateContent (多模态直吃 webm)          │
@@ -95,9 +104,9 @@
 
 ### 第 0 步：确认前置
 
-- **DSH Desktop** 已安装（本插件基于 DSH 0.1.0-rc.7 线）
+- **DSH Desktop** 已安装（本插件基于最新 DSH 0.1.1-rc.2 线）
 - **Node.js ≥ 20**（DSH 自带 runtime，一般无需另装）
-- **ffmpeg / ffprobe** 在 PATH（Windows 到 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) 下载 full build 解压，把 `bin` 加进系统 PATH）—— 语音输入/转写需要
+- **ffmpeg / ffprobe** 在 PATH（Windows 到 [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) 下载 full build 解压，把 `bin` 加进系统 PATH）—— 服务端转写需要
 
 ### 第 1 步：安装插件
 
@@ -105,20 +114,23 @@
 
 ```bash
 # 方式 A：GitHub 源码（推荐，可迭代）
-git clone https://github.com/ai-yucheng/dsh-audio-copilot.git
-pnpm add dsh-audio-copilot@link:C:/绝对路径/dsh-audio-copilot
+git clone https://github.com/mozhuanzuojing/dsh-voice-input.git
+pnpm add dsh-voice-input@link:C:/绝对路径/dsh-voice-input
 
 # 方式 B：npm（若已发布）
-pnpm add dsh-audio-copilot
+pnpm add dsh-voice-input
 ```
 
 然后在 profile 的 `package.json` → `dsh.profile.bundles` 数组里追加：
 
 ```json
-"dsh-audio-copilot"
+"dsh-voice-input"
 ```
 
 ### 第 2 步：配置 API Key（按你选的引擎）
+
+**🚀 Web Speech（默认，Chrome/Edge，免 key）**：
+无需任何配置。浏览器原生识别，实时、不耗 API 额度。
 
 **🇨🇳 智谱引擎（推荐，国内直连）**：
 1. 注册 [bigmodel.cn](https://bigmodel.cn)（手机号 + 实名）
@@ -145,9 +157,9 @@ cp docs/local-asr/transcribe.py C:/Users/<你>/dsh-local-asr/
 在 profile 的 `cordis.patch.yml` 追加：
 
 ```yaml
-- id: audio-copilot
+- id: dsh-voice-input
   config:
-    asrEngine: zhipu          # zhipu | local | gemini | openai
+    asrEngine: gemini          # gemini | zhipu | local | openai（Web Speech 在客户端选择）
     asrBaseUrl: https://open.bigmodel.cn/api/paas/v4
     asrModel: glm-asr-2512
     asrApiKeyEnv: ZHIPU_API_KEY
@@ -165,7 +177,7 @@ cp docs/local-asr/transcribe.py C:/Users/<你>/dsh-local-asr/
 验证命令：
 
 ```bash
-dsh --profile web --dump-config | grep audio-copilot
+dsh --profile web --dump-config | grep dsh-voice-input
 ```
 
 ---
@@ -174,18 +186,19 @@ dsh --profile web --dump-config | grep audio-copilot
 
 | 键 | 默认 | 说明 |
 |---|---|---|
-| `asrEngine` | `gemini` | 语音转写引擎：`zhipu` / `local` / `gemini` / `openai` |
+| `asrEngine` | `gemini` | 服务端语音转写引擎：`gemini` / `zhipu` / `local` / `openai`（Web Speech 在客户端选择） |
 | `asrBaseUrl` | `https://open.bigmodel.cn/api/paas/v4` | zhipu/openai 引擎端点根 |
 | `asrModel` | `glm-asr-2512` | zhipu/openai 引擎模型名 |
 | `asrApiKeyEnv` | `ZHIPU_API_KEY` | zhipu/openai 引擎持 key 的环境变量名 |
 | `geminiApiKeyEnv` | `GEMINI_API_KEY` | gemini 引擎 key 环境变量 |
-| `geminiModel` | `gemini-3.6-flash` | gemini 引擎模型 |
+| `geminiModel` | `gemini-2.5-flash` | gemini 引擎模型 |
 | `geminiBaseUrl` | `https://generativelanguage.googleapis.com` | gemini 端点根 |
-| `geminiProxy` | `http://127.0.0.1:7890` | gemini 代理（海外直连无需配） |
-| `localAsrRoot` | *(空)* | 本地引擎目录（含 `transcribe.py`） |
+| `geminiProxy` | *(空)* | gemini 代理；留空自动回退 `HTTPS_PROXY`/`http_proxy` 环境变量（本机走 9910 美国节点） |
+| `localAsrRoot` | `C:/Users/Admin/ss/DSH_UPGRADE/local-asr` | 本地引擎目录（含 `transcribe.py`），可按机器改 |
 | `localAsrModel` | `medium` | 本地 whisper 模型：tiny/base/small/medium/large-v3 |
 | `localAsrThreads` | `4` | 本地转写 CPU 线程数 |
-| `localAsrPrompt` | *(空)* | 本地引擎专有名词提示（逗号分隔，如 `DeepSeek, DSH, 智能体`），显著提升术语识别 |
+| `localAsrLanguage` | *(空)* | 本地引擎指定语言（如 `zh`/`en`/`yue`），留空自动检测 |
+| `localAsrPrompt` | `DeepSeek, DSH, 智能体, Flash, V4, 语音, 转写` | 本地引擎专有名词提示（逗号分隔），显著提升术语识别 |
 | `maxAudioBytes` | `26214400` | 转写文件大小上限（25MB） |
 | `transcribeTimeoutMs` | `120000` | ASR 超时（毫秒） |
 
@@ -195,12 +208,13 @@ dsh --profile web --dump-config | grep audio-copilot
 
 | 你的情况 | 推荐引擎 | 理由 |
 |---|---|---|
+| 🚀 Chrome/Edge 用户、想免 key 实时 | **`webspeech`**（默认，支持则优先） | 浏览器原生识别，免 key、实时、不耗 API 额度 |
+| 🌐 有代理、要最强语义理解 | **`gemini`** | 音频理解能力顶级；免费档限流，付费档 ~3厘/分钟 |
 | 🇨🇳 国内网络、要方言/外语 | **`zhipu`** | 国内直连无墙；中文+四川/粤/闽/吴方言+数十种外语；按量计费极便宜 |
 | 💰 不想花钱、离线优先 | **`local`** | faster-whisper 免费无限用，隐私（音频不出本机）；medium 模型中文准确 |
-| 🌐 有代理、要最强语义理解 | **`gemini`** | 音频理解能力顶级；免费档限流，付费档 ~3厘/分钟 |
 | 🔌 已有第三方 ASR 端点 | **`openai`** | 任何 OpenAI 兼容 `/audio/transcriptions` |
 
-> 💡 换引擎只需改 `cordis.patch.yml` 的 `asrEngine` + 重启，不影响其他功能。
+> 💡 服务端引擎改 `cordis.patch.yml` 的 `asrEngine` + 重启；`webspeech` 在按钮下拉里选，无需配 key。
 
 ---
 
@@ -219,16 +233,16 @@ dsh --profile web --dump-config | grep audio-copilot
 ## ❓ 常见问题 FAQ
 
 **Q：按钮不出现？**
-重启 DSH + 硬刷新浏览器；确认 `dsh.profile.bundles` 已加 `dsh-audio-copilot`。
+重启 DSH + 硬刷新浏览器；确认 `dsh.profile.bundles` 已加 `dsh-voice-input`。
 
 **Q：点了按钮没反应？**
-确认麦克风权限已允许；看按钮是否弹出错误提示（如"转写失败:xxx"）。录音需 ffmpeg（zhipu 引擎转 wav）。
+确认麦克风权限已允许；看按钮是否弹出错误提示（如"转写失败:xxx"）。服务端转写需 ffmpeg（zhipu 引擎转 wav）。
 
 **Q：转写失败"余额不足"？**
-智谱引擎需要在 [bigmodel.cn](https://bigmodel.cn) 充值；其他引擎检查对应 key。
+智谱引擎需要在 [bigmodel.cn](https://bigmodel.cn) 充值；其他引擎检查对应 key；或用浏览器 Web Speech（免 key）。
 
 **Q：转写失败 429？**
-Gemini 免费档每时段 20 次限流，已自动重试一次；建议换 zhipu/local 引擎。
+Gemini 免费档每时段 20 次限流，已自动重试一次；建议换 webspeech/zhipu/local 引擎。
 
 **Q：识别不准（专有名词错）？**
 - 本地引擎：配置 `localAsrPrompt`（如 `DeepSeek, DSH, 智能体`），实测显著提升
@@ -253,7 +267,7 @@ Gemini 免费档每时段 20 次限流，已自动重试一次；建议换 zhipu
 
 ## 🤝 配套项目
 
-同系列 DSH 插件（均为自研，开源）：
+同系列/上游 DSH 插件（dsh-composer-image-tools 来自 ai-yucheng 体系，开源）：
 
 - [**dsh-composer-image-tools**](https://github.com/ai-yucheng/dsh-composer-image-tools) —— 聊天输入框图片工具：📎 上传图片（≤10MB 防烧 token）+ 📷 自定义区域截图（Electron desktopCapturer，不依赖任何外部工具）。与 🎤 按钮同栏并排。
 
@@ -263,10 +277,11 @@ Gemini 免费档每时段 20 次限流，已自动重试一次；建议换 zhipu
 
 详见 [CHANGELOG.md](CHANGELOG.md)。关键里程碑：
 
+- `0.5.0` — 改名 dsh-voice-input、新增浏览器 Web Speech API（Chrome/Edge 免 key 实时）、跟随最新 DSH
 - `0.1.0` — 四引擎转写（zhipu/local/gemini/openai）、语音输入按钮、429 自动重试、webm 自动转 wav、本地 faster-whisper 部署、React 兼容的文字注入
 
 ---
 
 ## 📄 协议
 
-MIT © [ai-yucheng](https://github.com/ai-yucheng)
+MIT © [mozhuanzuojing](https://github.com/mozhuanzuojing) · 基于 [ai-yucheng/dsh-audio-copilot](https://github.com/ai-yucheng/dsh-audio-copilot) 的本地改造版
