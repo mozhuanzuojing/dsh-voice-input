@@ -101,27 +101,67 @@ function iconSpinner(): string {
 
 // ── 输入框定位与文本写入 ───────────────────────────────────────────────────
 
-function findComposer(): HTMLTextAreaElement | null {
-  const textarea = document.querySelector<HTMLTextAreaElement>(
-    'textarea[data-composer-card], textarea[placeholder]',
-  )
-  if (textarea) return textarea
-  const anyArea = Array.from(document.querySelectorAll<HTMLTextAreaElement>('textarea')).find(
-    (t) => t.offsetParent !== null,
-  )
-  return anyArea ?? null
+/** 输入元素:DSH 0.1.2 的 composer 用 contenteditable div(新增/常用),
+ * 旧版用 textarea。两个都要兼容,但 contenteditable 优先。 */
+type ComposerElement = HTMLTextAreaElement | HTMLElement
+
+function isEditableContent(el: Element | null): el is HTMLElement {
+  return el instanceof HTMLElement && el.isContentEditable
 }
 
-function insertTextIntoComposer(composer: HTMLTextAreaElement, text: string) {
-  const sep = composer.value && !composer.value.endsWith('\n') ? '\n' : ''
+function findComposer(): ComposerElement | null {
+  // DSH 0.1.2:composer 主输入是 contenteditable div(类名含 input,data-composer-card 内)。
+  // 优先 composer 卡片内的 contenteditable,再退回 textarea。
+  const card = document.querySelector('[data-composer-card]')
+  if (card) {
+    const editable = Array.from(card.querySelectorAll<HTMLElement>('[contenteditable="true"], [contenteditable=""]')).find(
+      (el) => el.offsetParent !== null,
+    )
+    if (editable) return editable
+    const inCardTextarea = card.querySelector<HTMLTextAreaElement>('textarea')
+    if (inCardTextarea) return inCardTextarea
+  }
+  // 全页面兜底:任意可见 contenteditable,再任意 textarea。
+  const anyEditable = Array.from(document.querySelectorAll<HTMLElement>('[contenteditable="true"], [contenteditable=""]')).find(
+    (el) => el.offsetParent !== null,
+  )
+  if (anyEditable) return anyEditable
+  const anyTextarea = Array.from(document.querySelectorAll<HTMLTextAreaElement>('textarea')).find(
+    (t) => t.offsetParent !== null,
+  )
+  return anyTextarea ?? null
+}
+
+/** 把光标放到输入元素末尾(让注入的文本落到底部)。textarea 用 setSelectionRange,
+ * contenteditable 用 Selection+Range。 */
+function placeCaretAtEnd(el: ComposerElement) {
+  el.focus()
+  if (el instanceof HTMLTextAreaElement) {
+    el.setSelectionRange(el.value.length, el.value.length)
+    return
+  }
+  try {
+    const range = document.createRange()
+    range.selectNodeContents(el)
+    range.collapse(false)
+    const sel = window.getSelection()
+    sel?.removeAllRanges()
+    sel?.addRange(range)
+  } catch { /* noop */ }
+}
+
+function currentText(el: ComposerElement): string {
+  return el instanceof HTMLTextAreaElement ? el.value : (el.innerText ?? '')
+}
+
+function insertTextIntoComposer(composer: ComposerElement, text: string) {
+  const cur = currentText(composer)
+  const sep = cur && !cur.endsWith('\n') ? '\n' : ''
+  placeCaretAtEnd(composer)
   // 模拟"粘贴"事件:构造 ClipboardEvent + DataTransfer,派发到输入框。
   // DSH 的 onPaste 收到后走它自己的 pasteBegin 路径(等价真实 Ctrl+V),
-  // 是官方文本进入草稿的通道 —— 比任何直接改 DOM value 的方式都可靠
-  // (React 19 受控组件会对程序化改值做 restoreControlledState 重置,
-  // 实测直接赋值/原型 setter/execCommand 三种方案全部被吞)。
-  composer.focus()
+  // 是官方文本进入草稿的通道 —— 比任何直接改 DOM value 的方式都可靠。
   try {
-    composer.setSelectionRange(composer.value.length, composer.value.length)
     const dt = new DataTransfer()
     dt.setData('text/plain', sep + text)
     const evt = new ClipboardEvent('paste', {
@@ -132,13 +172,17 @@ function insertTextIntoComposer(composer: HTMLTextAreaElement, text: string) {
     composer.dispatchEvent(evt)
     return
   } catch {
-    // 兜底:原型 setter + tracker 同步 + input 事件
-    const next = composer.value + sep + text
-    const desc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(composer), 'value')
-    if (desc?.set) desc.set.call(composer, next)
-    else composer.value = next
-    const tracker = (composer as HTMLTextAreaElement & { _valueTracker?: { setValue(v: string): void } })._valueTracker
-    tracker?.setValue?.(next)
+    // 兜底:直接改文本 + dispatch input。
+    const next = cur + sep + text
+    if (composer instanceof HTMLTextAreaElement) {
+      const desc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(composer), 'value')
+      if (desc?.set) desc.set.call(composer, next)
+      else composer.value = next
+      const tracker = (composer as HTMLTextAreaElement & { _valueTracker?: { setValue(v: string): void } })._valueTracker
+      tracker?.setValue?.(next)
+    } else {
+      composer.innerText = next
+    }
     composer.dispatchEvent(new Event('input', { bubbles: true }))
   }
 }
@@ -382,7 +426,7 @@ function mountButton() {
             // 注入后验证:React 重渲染后再确认文字真的进了草稿;
             // 失败则把转写结果亮出来(toast + 剪贴板),绝不"没动静"
             setTimeout(() => {
-              if (fresh.value.indexOf(body.text) < 0) {
+              if (currentText(fresh).indexOf(body.text) < 0) {
                 showToast(`转写完成:${body.text} (未能自动填入,已复制,可直接 Ctrl+V)`)
                 navigator.clipboard?.writeText?.(body.text).catch(() => {})
               }

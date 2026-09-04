@@ -1,6 +1,6 @@
 {
   "name": "dsh-voice-input",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "聊天框语音输入按钮 for DeepSeek Harness(本地改造版):支持 Web Speech API(Chrome/Edge 免 key 实时)与 Gemini 等服务端 ASR,点击麦克风说话自动填入输入框。",
   "license": "MIT",
   "keywords": [
@@ -37,9 +37,6 @@
       "patch": "./cordis.patch.yml"
     },
     "client": {
-      "inject": [
-        "@deepseek-ai/dsh-client-runtime"
-      ],
       "platform": "web"
     }
   },
@@ -52,10 +49,10 @@
     "undici": "^8.10.0"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1"
+    "@deepseek-ai/cordis": "^4.0.2"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/cordis": "^4.0.2",
     "@types/node": "^22.10.0",
     "@types/ws": "^8.18.1",
     "typescript": "^5.6.0"

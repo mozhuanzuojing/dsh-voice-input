@@ -5,6 +5,16 @@
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.6.0] - 2026-09-03
+
+### 🐛 适配 DSH 0.1.2-rc.1：composer 改为 contenteditable
+
+DSH 0.1.2-rc.1 把聊天输入框从 `textarea` 改成 `DIV[contenteditable=true]`，导致麦克风按钮挂不到输入框（`findComposer` 只认 textarea）。
+
+- **客户端修复**：`src/client.ts` 的 `findComposer` 扩展为同时匹配 `[contenteditable=true]` 与 `textarea`（contenteditable 优先）；`insertTextIntoComposer` 对 contenteditable 用 `Selection+Range` 定位光标再派发 paste 事件，注入文本落到底部。
+- **依赖清理**：`package.json` 移除 `dsh.client.inject` 里陈旧的 `@deepseek-ai/dsh-client-runtime`（该包在 DSH 0.1.2-rc.1 已删除）；cordis peer/dev 升到 `^4.0.2`。
+- 已实测：按钮在 0.1.2-rc.1 的 contenteditable composer 上正常挂载。
+
 ## [0.5.0] - 2026-08-25
 
 ### 🚀 本地改造版：改名 dsh-voice-input + Web Speech 支持
